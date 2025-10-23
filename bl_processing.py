@@ -1,92 +1,303 @@
-import re  # Modul für reguläre Ausdrücke
+# bl_processing.py
+import re
+import logging
+from typing import Optional, Tuple, List
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
 
 
 class PropertyToDatabase:
-    """
-    Klasse: PropertyToDatabase
-    ---------------------------
-    Verarbeitet PropertyItems aus einer Webseite und speichert sie
-    in die passende Spalte der `library`-Datenbank.
-    """
+    NORMALIZED_MAPPING = {
+        "titel": ["Title", "Buchtitel"],
+        "zustand": ["Condition_ID"],
+        "verlag": ["Verlag"],
+        "format": ["CFormat"],
+        "auflage": ["Ausgabe"],
+        "sprache": ["Sprache"],
+        "stichwörter": ["Thematik"],
+        "autor/in": ["Autor"],
+        "vom autor signiert": ["Signiert_von"],
+        "einband": ["Produktart"],
+        "produktart": ["Produktart"],
+        "erschienen": ["Erscheinungsjahr"],
+    }
 
-    # Aktualisiertes Mapping der Property-Namen zu den entsprechenden Spalten in der Tabelle
-    # HINWEIS: Hier sind zwei Keys "Titel:" drin – im Python-Dict überschreibt der zweite
-    # den ersten. Die Sonderbehandlung der Spalten 'Title' und 'Buchtitel' erfolgt daher
-    # über einen if-check in `insert_properties_to_db`.
-    PROPERTY_MAPPING = {
-        "Titel:": "Buchtitel",
-        "Titel:": "Title",  # Achtung: Überschreibt denselben Key im Dictionary
-        "Zustand:": "Condition_ID",
-        "Verlag:": "Verlag",
-        "Format:": "CFormat",
-        "Auflage:": "Ausgabe",
-        "Sprache:": "Sprache",
-        "Stichwörter:": "Thematik",
-        "Autor/in:": "Autor",
-        "vom Autor signiert:": "Signiert_von",
-        "Einband:": "Produktart",
-        "Erschienen:": "Erscheinungsjahr"
+    PRODUCTART_MAP = {
+        "paperback": "Taschenbuch",
+        "taschenbuch": "Taschenbuch",
+        "broschiert": "Taschenbuch",
+        "kartoniert": "Taschenbuch",
+        "softcover": "Taschenbuch",
+        "hardcover": "Hardcover",
+        "gebunden": "Hardcover",
+        "gebundene ausgabe": "Hardcover",
+        "leinen": "Hardcover",
+    }
+
+    YEAR_RE = re.compile(r"^(19|20)\d{2}$")
+
+    # Maße-Erkennung (cm/mm)
+    DIM_PAIR_CM = re.compile(r"^\s*(\d{1,3}(?:[.,]\d+)?)\s*[x×]\s*(\d{1,3}(?:[.,]\d+)?)\s*cm\s*$", re.IGNORECASE)
+    DIM_PAIR_MM = re.compile(r"^\s*(\d{1,4})\s*[x×]\s*(\d{1,4})\s*mm\s*$", re.IGNORECASE)
+    DIM_SINGLE_CM = re.compile(r"^\s*(\d{1,3}(?:[.,]\d+)?)\s*cm\s*$", re.IGNORECASE)
+    DIM_SINGLE_MM = re.compile(r"^\s*(\d{1,4})\s*mm\s*$", re.IGNORECASE)
+
+    # 3D-Erkennung
+    DIM_TRIPLE_MM = re.compile(r"^\s*(\d{1,4})\s*[x×]\s*(\d{1,4})\s*[x×]\s*(\d{1,4})\s*mm\s*$", re.IGNORECASE)
+    DIM_TRIPLE_CM = re.compile(r"^\s*(\d{1,3}(?:[.,]\d+)?)\s*[x×]\s*(\d{1,3}(?:[.,]\d+)?)\s*[x×]\s*(\d{1,3}(?:[.,]\d+)?)\s*cm\s*$", re.IGNORECASE)
+
+    # Ausgabe-Erkennung
+    AUSGABE_NUM_RE = re.compile(r"^\s*(\d{1,2})\s*\.?\s*(auflage)?\s*$", re.IGNORECASE)
+
+    # Stopwortliste für Thematik-Heuristik
+    STOPWORDS = {
+        "und", "oder", "mit", "aus", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einem", "einer",
+        "im", "am", "vom", "zum", "zur", "für", "auf", "an", "bei", "von", "bis", "nach", "über", "ohne",
+        "erleben", "entdecken", "bummeln", "trinken", "übernachten", "ausflüge", "wanderungen", "sehenswertes",
+        "seiten", "neu", "aktuell", "jetzt", "bestellen"
     }
 
     @staticmethod
+    def _normalize_key(s: str) -> str:
+        s = (s or "").replace("\xa0", " ").strip()
+        s = s.rstrip(":").strip()
+        s = s.lower()
+        return s
+
+    @staticmethod
     def truncate_title(title: str, max_length: int = 80) -> str:
-        """
-        Kürzt den Titel so, dass Wörter nicht zerschnitten werden.
-        Wenn der Titel länger als `max_length` ist, wird er auf das letzte vollständige Wort
-        innerhalb der maximalen Länge gekürzt.
-
-        Parameter:
-        - title (str): Der Originaltitel.
-        - max_length (int): Maximale Länge des Titels (Standard: 80 Zeichen).
-
-        Rückgabe:
-        - str: Der gekürzte Titel.
-        """
         if len(title) <= max_length:
             return title
-
-        # Kürze den Titel auf die maximale Länge
         truncated = title[:max_length]
-
-        # Schneide bis zum letzten Leerzeichen, um ein vollständiges Wort zu erhalten
-        if " " in truncated:
-            return truncated.rsplit(" ", 1)[0]
-        else:
-            return truncated
+        truncated = truncated.rsplit(" ", 1)[0] if " " in truncated else truncated
+        return truncated + " …"
 
     @staticmethod
     def truncate_to_max_length(text: str, max_length: int = 65) -> str:
-        """
-        Kürzt einen Text so, dass kein Wort in der Mitte abgeschnitten wird und
-        die Länge `max_length` nicht überschreitet.
-
-        Parameter:
-        - text (str): Der Originaltext.
-        - max_length (int): Maximale erlaubte Länge (Standard: 65 Zeichen).
-
-        Rückgabe:
-        - str: Der gekürzte Text.
-        """
         if len(text) <= max_length:
-            return text  # Falls die Länge bereits passt, ändere nichts
+            return text
+        truncated = text[:max_length]
+        return truncated.rsplit(" ", 1)[0] if " " in truncated else truncated
 
-        truncated = text[:max_length]  # Schneide grob auf max. Länge
-        if " " in truncated:
-            return truncated.rsplit(" ", 1)[0]  # Kürze bis zum letzten Leerzeichen
-        return truncated  # Falls kein Leerzeichen gefunden wurde, gib einfach das Maximum zurück
+    # ---------- CFORMAT (2D/3D) ----------
+    @staticmethod
+    def _to_mm(value_cm: float) -> int:
+        return int(round(value_cm * 10))
+
+    @staticmethod
+    def _parse_dimension_pair(text: str) -> Optional[Tuple[int, int]]:
+        t = (text or "").strip()
+        m = PropertyToDatabase.DIM_PAIR_CM.match(t)
+        if m:
+            w = PropertyToDatabase._to_mm(float(m.group(1).replace(",", ".")))
+            h = PropertyToDatabase._to_mm(float(m.group(2).replace(",", ".")))
+            return w, h
+        m = PropertyToDatabase.DIM_PAIR_MM.match(t)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+        return None
+
+    @staticmethod
+    def _parse_dimension_single(text: str) -> Optional[int]:
+        t = (text or "").strip()
+        m = PropertyToDatabase.DIM_SINGLE_CM.match(t)
+        if m:
+            return PropertyToDatabase._to_mm(float(m.group(1).replace(",", ".")))
+        m = PropertyToDatabase.DIM_SINGLE_MM.match(t)
+        if m:
+            return int(m.group(1))
+        return None
+
+    @staticmethod
+    def _parse_dimension_triple(text: str) -> Optional[Tuple[int, int, int]]:
+        t = (text or "").strip()
+        m = PropertyToDatabase.DIM_TRIPLE_CM.match(t)
+        if m:
+            a = PropertyToDatabase._to_mm(float(m.group(1).replace(",", ".")))
+            b = PropertyToDatabase._to_mm(float(m.group(2).replace(",", ".")))
+            c = PropertyToDatabase._to_mm(float(m.group(3).replace(",", ".")))
+            return a, b, c
+        m = PropertyToDatabase.DIM_TRIPLE_MM.match(t)
+        if m:
+            return int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return None
+
+    @staticmethod
+    def normalize_cformat(raw_value: str) -> Optional[str]:
+        """
+        Normalisiert Maße:
+        - 3D: 'L x B x H mm'
+        - 2D: 'Breite x Höhe mm'
+        - 1D: 'Höhe mm'
+        - sonst: None
+        Konsistente Abstände um 'x'.
+        """
+        if not raw_value:
+            return None
+        val = re.sub(r"\s+", " ", raw_value).strip()
+        val = re.sub(r"\s*[x×]\s*", " x ", val)
+
+        tri = PropertyToDatabase._parse_dimension_triple(val)
+        if tri:
+            a, b, c = tri
+            return f"{a} x {b} x {c} mm"
+
+        pair = PropertyToDatabase._parse_dimension_pair(val)
+        if pair:
+            w, h = pair
+            return f"{w} x {h} mm"
+
+        single = PropertyToDatabase._parse_dimension_single(val)
+        if single:
+            return f"{single} mm"
+
+        return None
+
+    # ---------- THEMATIK ----------
+    @staticmethod
+    def normalize_thematik(raw_value: str) -> str:
+        """
+        Entfernt überflüssige Leerzeichen/Leer-Tokens.
+        Wenn keine Kommas vorhanden und Text sehr lang:
+        heuristische Keyword-Extraktion (Stopwörter, nur Buchstaben, Länge>=3, Deduplizierung, Limit 12).
+        """
+        if not raw_value:
+            return "Keine Angabe"
+        s = str(raw_value).strip()
+
+        # Normalfall mit Kommas
+        if "," in s:
+            s = re.sub(r"\s*,\s*", ",", s)
+            tokens = [t.strip() for t in s.split(",")]
+            tokens = [t for t in tokens if t]
+            return ", ".join(tokens) if tokens else "Keine Angabe"
+
+        # Heuristik: Fließtext ohne Kommas und lang
+        if len(s) >= 60:
+            words = re.findall(r"[A-Za-zÄÖÜäöüß]+", s)
+            seen = set()
+            cleaned = []
+            for w in words:
+                wl = w.lower()
+                if wl in PropertyToDatabase.STOPWORDS:
+                    continue
+                if len(wl) < 3:
+                    continue
+                if wl not in seen:
+                    seen.add(wl)
+                    cleaned.append(w.capitalize())
+                if len(cleaned) >= 12:
+                    break
+            return ", ".join(cleaned) if cleaned else "Keine Angabe"
+
+        # Kurzer Einzelbegriff ohne Kommas -> unverändert
+        return s
+
+    # ---------- JAHR ----------
+    @staticmethod
+    def normalize_year(raw_value: str) -> str:
+        """
+        Extrahiert eine vierstellige Jahreszahl (1900–2099) aus beliebigem Text.
+        Gibt die reine Jahreszahl als String zurück oder 'Keine Angabe'.
+        """
+        if not raw_value:
+            return "Keine Angabe"
+        s = str(raw_value).strip()
+
+        m = re.search(r"(19|20)\d{2}", s)
+        if not m:
+            return "Keine Angabe"
+
+        year = m.group(0)
+        try:
+            y = int(year)
+            if 1900 <= y <= 2099:
+                return str(y)
+        except ValueError:
+            pass
+        return "Keine Angabe"
+
+    # ---------- AUSGABE ----------
+    @staticmethod
+    def normalize_ausgabe(raw_value: str) -> str:
+        """
+        Vereinheitlicht 'Auflage':
+        - '1' / '1.' / '1. Auflage' -> '1. Auflage'
+        - 'Neuauflage'/'neu' -> 'Neuauflage'
+        - 'Überarbeitet'/'aktualisiert' -> 'Überarbeitete Auflage'
+        - kurze freie Texte (<=25 Zeichen) bleiben, Kapitalisierung freundlich
+        - Datums-/Mischfragmente -> 'Keine Angabe'
+        """
+        if not raw_value:
+            return "Keine Angabe"
+        s = str(raw_value).strip().lower()
+
+        if re.search(r"neu(auflage)?", s):
+            return "Neuauflage"
+
+        if re.search(r"(überarbeitet|aktualisiert)", s):
+            return "Überarbeitete Auflage"
+
+        m = PropertyToDatabase.AUSGABE_NUM_RE.match(s)
+        if m:
+            num = m.group(1)
+            try:
+                n = int(num)
+                if 1 <= n <= 50:
+                    return f"{n}. Auflage"
+            except ValueError:
+                pass
+
+        if len(s) <= 25 and not re.search(r"\d{1,2}/\d{4}", s):
+            return s.capitalize()
+
+        return "Keine Angabe"
+
+    # ---------- PRODUKTART ----------
+    @staticmethod
+    def normalize_productart(raw_value: str) -> str:
+        if not raw_value:
+            return "Keine Angabe"
+        s = str(raw_value).strip().lower()
+
+        # Maße nicht als Produktart behandeln
+        if (PropertyToDatabase._parse_dimension_triple(s) or
+            PropertyToDatabase._parse_dimension_pair(s) or
+            PropertyToDatabase._parse_dimension_single(s)):
+            return raw_value
+
+        return PropertyToDatabase.PRODUCTART_MAP.get(s, raw_value)
+
+    @staticmethod
+    def infer_productart_if_missing(current_productart: str, cformat_value: Optional[str], title: Optional[str], thematik: Optional[str]) -> str:
+        pa = (current_productart or "").strip()
+        if pa and pa.lower() != "keine angabe":
+            return current_productart
+
+        if cformat_value and "mm" in cformat_value:
+            return "Taschenbuch"
+
+        hints: List[str] = []
+        if title:
+            hints.append(title.lower())
+        if thematik:
+            hints.append(thematik.lower())
+
+        hint_text = " ".join(hints)
+        keywords = ["reiseführer", "reise", "guide", "pocket", "merian", "lonely planet", "dumont", "polyglott"]
+        if any(k in hint_text for k in keywords):
+            return "Taschenbuch"
+
+        return current_productart or "Keine Angabe"
 
     @staticmethod
     async def process_and_save(soup: BeautifulSoup, num: int, db_pool):
-        """
-        Führt die Extraktion und Speicherung von PropertyItems in einem Schritt aus.
-        """
-        # 1) Extrahiere die Properties aus dem HTML
         properties = PropertyExtractor.extract_property_items(soup)
-
-        # 2) Speichere die Properties + Description in der Datenbank
-        if properties:
-            await PropertyToDatabase.insert_properties_to_db(properties, num, db_pool)
+        if not properties:
+            logger.info(f"[{num}] Keine PropertyItems gefunden – überspringe Update.")
+            return False
+        return await PropertyToDatabase.insert_properties_to_db(properties, num, db_pool)
 
     @staticmethod
     async def insert_properties_to_db(properties: dict, num: int, db_pool):
@@ -94,188 +305,196 @@ class PropertyToDatabase:
             db_columns = []
             db_values = []
 
-            # 1) Baue anhand des PROPERTY_MAPPING die zu setzenden Spalten und Werte
-            for property_name, db_column in PropertyToDatabase.PROPERTY_MAPPING.items():
-                # Falls die Property im `properties`-Dictionary fehlt, nutze "Keine Angabe"
-                property_value = properties.get(property_name, "Keine Angabe")
+            normalized_props = {}
+            for raw_key, val in properties.items():
+                key_norm = PropertyToDatabase._normalize_key(raw_key)
+                normalized_props[key_norm] = val
 
-                # Sonderbehandlung für Thematik (Max. 65 Zeichen, aber kein Wort abschneiden)
-                if property_name == "Stichwörter:":
-                    property_value = PropertyToDatabase.truncate_to_max_length(property_value, 65)
+            unmapped = []
+            temp_values = {}
 
-                # Sonderbehandlung für Titel (wir wollen 'Title' gekürzt und 'Buchtitel' ungekürzt)
-                elif property_name == "Titel:":
-                    db_columns.append("Title")
-                    db_values.append(PropertyToDatabase.truncate_title(property_value))
-                    db_columns.append("Buchtitel")
-                    db_values.append(property_value)
+            for key_norm, val in normalized_props.items():
 
-                    # Sonderbehandlung für Zustand (mapping auf Condition_ID)
-                elif property_name == "Zustand:":
-                    property_value = PropertyToDatabase.map_condition(property_value)
-                    db_columns.append(db_column)
-                    db_values.append(property_value)
+                # Thematik
+                if key_norm == "stichwörter":
+                    val = PropertyToDatabase.normalize_thematik(val)
 
+                # Titel
+                if key_norm == "titel":
+                    temp_values["Title"] = PropertyToDatabase.truncate_title(val)
+                    temp_values["Buchtitel"] = val
+                    db_columns += ["Title", "Buchtitel"]
+                    db_values  += [temp_values["Title"], temp_values["Buchtitel"]]
+                    continue
+
+                # Zustand
+                if key_norm == "zustand":
+                    val = PropertyToDatabase._map_condition(val)
+
+                # Produktart
+                if key_norm in ("produktart", "einband"):
+                    val = PropertyToDatabase.normalize_productart(val)
+
+                # Erscheinungsjahr
+                if key_norm == "erschienen":
+                    val = PropertyToDatabase.normalize_year(val)
+
+                target_cols = PropertyToDatabase.NORMALIZED_MAPPING.get(key_norm)
+                if target_cols:
+                    target_col = target_cols[0]
+
+                    # cformat – Maße normalisieren
+                    if target_col == "CFormat":
+                        cf = PropertyToDatabase.normalize_cformat(str(val))
+                        if cf:
+                            val = cf
+                        temp_values["CFormat"] = val
+
+                    if target_col == "Thematik":
+                        temp_values["Thematik"] = val
+
+                    db_columns.append(target_col)
+                    db_values.append(val)
                 else:
-                    db_columns.append(db_column)
-                    db_values.append(property_value)
+                    unmapped.append((key_norm, val))
 
-            # 2) Generische Beschreibung generieren
-            description_html = PropertyToDatabase.build_description_html(properties)
+            # Produktart-Heuristik
+            current_pa = None
+            if "Produktart" in db_columns:
+                idx = max(i for i, c in enumerate(db_columns) if c == "Produktart")
+                current_pa = db_values[idx]
+                inferred = PropertyToDatabase.infer_productart_if_missing(
+                    current_pa, temp_values.get("CFormat"),
+                    temp_values.get("Buchtitel") or temp_values.get("Title"),
+                    temp_values.get("Thematik")
+                )
+                if inferred != current_pa:
+                    db_values[idx] = inferred
+            else:
+                inferred = PropertyToDatabase.infer_productart_if_missing(
+                    "Keine Angabe", temp_values.get("CFormat"),
+                    temp_values.get("Buchtitel") or temp_values.get("Title"),
+                    temp_values.get("Thematik")
+                )
+                if inferred and inferred != "Keine Angabe":
+                    db_columns.append("Produktart")
+                    db_values.append(inferred)
 
-            # 3) Description-Feld hinzufügen
+            # Beschreibung
+            description_html = PropertyToDatabase.build_description_html(normalized_props)
             db_columns.append("Description")
             db_values.append(description_html)
 
             if not db_columns:
-                print(f"Keine gültigen Spalten für Artikel {num} gefunden.")
+                logger.info(f"[{num}] Keine gültigen Spalten – kein Update.")
                 return False
 
-            # 4) SQL-Query dynamisch erstellen (nur 1x UPDATE)
-            sql_query = f"""
+            set_clause = ", ".join(f"{col} = ${i+1}" for i, col in enumerate(db_columns))
+            sql = f"""
                 UPDATE library
-                SET {', '.join(f"{col} = ${i + 1}" for i, col in enumerate(db_columns))}
-                WHERE id = ${len(db_columns) + 1}
+                   SET {set_clause}
+                 WHERE id = ${len(db_columns)+1}
             """
-
-            # 5) Query ausführen
             async with db_pool.acquire() as conn:
-                await conn.execute(sql_query, *db_values, num)
+                await conn.execute(sql, *db_values, num)
 
-            print(f"PropertyItems erfolgreich für Artikel {num} gespeichert.")
+            if unmapped:
+                logger.debug(f"[{num}] UNMAPPED properties: {unmapped[:8]}{' ...' if len(unmapped) > 8 else ''}")
+
+            logger.info(f"[{num}] PropertyItems gespeichert ({len(db_columns)} Spalten aktualisiert).")
             return True
 
         except Exception as e:
-            print(f"Fehler beim Speichern der PropertyItems für Artikel {num}: {e}")
+            logger.error(f"[{num}] Fehler beim Speichern der PropertyItems: {e}")
             return False
 
     @staticmethod
-    def map_condition(condition: str) -> str:
-        """
-        Funktion: map_condition
-        ------------------------
-        Ordnet eine Zustandsbeschreibung der entsprechenden ID zu.
-
-        Parameter:
-        - condition (str): Die Zustandsbeschreibung (z. B. "wie neu").
-
-        Rückgabe:
-        - str: Die zugehörige ID als String (z. B. "2750") oder "Keine Angabe", falls nicht zuordenbar.
-        """
+    def _map_condition(condition: str) -> str:
         if not condition:
-            return "Keine Angabe"
+            return "5000-Gut"  # Fallback
 
-        # Normalisiere die Eingabe
-        normalized_condition = condition.strip().lower()
+        norm = PropertyToDatabase._normalize_key(condition)
 
-        # Mapping-Tabelle mit normalisierten Werten
-        normalized_mapping = {
+        # Heuristik mit Synonymen
+        if any(k in norm for k in ["neuwertig", "wie neu", "neuware"]):
+            return "1000-Neuwertig"
+        if any(k in norm for k in ["sehr gut", "kaum gelesen", "nur geringe spuren", "sehr guter zustand"]):
+            return "4000-Sehr gut"
+        if any(k in norm for k in ["gut", "leichte gebrauchsspuren", "gebrauchsspuren", "guter zustand"]):
+            return "5000-Gut"
+        if any(k in norm for k in ["akzeptabel", "deutliche gebrauchsspuren", "stärkere spuren", "befriedigend"]):
+            return "6000-Akzeptabel"
+        if any(k in norm for k in ["stark abgenutzt", "stark gebraucht", "beschädigt", "wasserschaden", "mangelhaft"]):
+            return "7000-Stark gebraucht"
+
+        # Fallback-Mapping
+        mapping = {
             "neu, aktuelle ausgabe": "1000-Neuwertig",
             "neuware": "1000-Neuwertig",
-            "wie neu": "5000-Gut",
+            "wie neu": "1000-Neuwertig",
             "leichte gebrauchsspuren": "5000-Gut",
-            "deutliche gebrauchsspuren": "6000",
-            "stark abgenutzt": "6000"
+            "deutliche gebrauchsspuren": "6000-Akzeptabel",
+            "stark abgenutzt": "7000-Stark gebraucht",
         }
-
-        return normalized_mapping.get(normalized_condition, "Keine Angabe")
+        return mapping.get(norm, "5000-Gut")
 
     @staticmethod
-    def build_description_html(properties: dict) -> str:
-        """
-        Funktion: build_description_html
-        --------------------------------
-        Erstellt eine einfache, generische HTML-Beschreibung auf Basis
-        der vorliegenden Properties. Max. ~32.765 Zeichen für Excel-Zellen.
+    def build_description_html(properties_norm: dict) -> str:
+        def val(k):
+            return properties_norm.get(k)
 
-        Parameter:
-        - properties (dict): Das Dictionary mit allen Property-Werten,
-                             z.B. properties["Titel:"], properties["Autor/in:"], etc.
+        def add(label, value):
+            if not value:
+                return ""
+            v = str(value).strip()
+            if v.lower() == "keine angabe":
+                return ""
+            return f"<p><strong>{label}:</strong> {v}</p>"
 
-        Rückgabe:
-        - str: Die generierte HTML-Beschreibung.
-        """
-        try:
-            # Wir holen ein paar Felder exemplarisch für die Beschreibung:
-            titel = properties.get("Titel:", "Keine Angabe")
-            autor = properties.get("Autor/in:", "Keine Angabe")
-            verlag = properties.get("Verlag:", "Keine Angabe")
-            ausgabe = properties.get("Auflage:", "Keine Angabe")
-            sprache = properties.get("Sprache:", "Keine Angabe")
-            zustand = properties.get("Zustand:", "Keine Angabe")
+        titel   = val("titel")
+        autor   = val("autor/in")
+        verlag  = val("verlag")
+        ausgabe = val("auflage")
+        sprache = val("sprache")
+        zustand = val("zustand")
+        stichw  = PropertyToDatabase.normalize_thematik(val("stichwörter") or "")
 
-            # Einfaches HTML-Template
-            # <p> für Absätze, <br> für Zeilenumbruch
-            description_html = (
-                f"<p><strong>Titel:</strong> {titel}</p>"
-                f"<p><strong>Autor/in:</strong> {autor}</p>"
-                f"<p><strong>Verlag:</strong> {verlag}</p>"
-                f"<p><strong>Ausgabe:</strong> {ausgabe}</p>"
-                f"<p><strong>Sprache:</strong> {sprache}</p>"
-                f"<p><strong>Zustand:</strong> {zustand}</p>"
-                f"<br>"
-                f"Weitere Details entnehmen Sie bitte den oben aufgeführten Angaben.</p>"
-                f"<p>Viel Freude beim Schmökern!</p>"
-            )
-            return description_html
-        except Exception as e:
-            print(f"Fehler beim Erstellen der Beschreibung: {e}")
-            return "Keine Beschreibung vorhanden"
+        orig_beschr = val("beschreibung") or val("beschreibungstext") or val("artikelbeschreibung") or None
+
+        html = (
+            add("Titel", titel) +
+            add("Autor/in", autor) +
+            add("Verlag", verlag) +
+            add("Auflage", ausgabe) +
+            add("Sprache", sprache) +
+            add("Zustand", zustand) +
+            add("Stichwörter", stichw) +
+            add("Beschreibung", orig_beschr) +
+            "<br><p>Viel Freude beim Schmökern!</p>"
+        )
+        return html or "<p>Viel Freude beim Schmökern!</p>"
 
 
 class PropertyExtractor:
-    """
-    Klasse: PropertyExtractor
-    --------------------------
-    Verwaltet die Extraktion von PropertyItems aus einer Webseite.
-    """
-
     @staticmethod
     def extract_property_items(soup: BeautifulSoup) -> dict:
-        """
-        Funktion: extract_property_items
-        --------------------------------
-        Extrahiert alle PropertyItems aus einer Webseite und gibt sie als
-        Schlüssel-Wert-Paare in einem Wörterbuch zurück.
-
-        Parameter:
-        - soup (BeautifulSoup): Das BeautifulSoup-Objekt der Seite.
-
-        Rückgabe:
-        - dict: Ein Wörterbuch mit den extrahierten PropertyItems
-                (Eigenschaftsname → Wert).
-        """
         try:
-            properties = {}  # Initialisiere ein leeres Wörterbuch für die Eigenschaften
+            props = {}
+            items = soup.find_all(class_=re.compile(r"propertyItem_\d+"))
+            for item in items:
+                name_elem = item.find(class_="propertyName")
+                value_elem = item.find(class_="propertyValue")
+                if not name_elem or not value_elem:
+                    continue
 
-            # Suche nach allen div-Tags mit Klassen, die mit 'propertyItem_' beginnen
-            property_items = soup.find_all(class_=re.compile(r"propertyItem_\d+"))
+                raw_name = name_elem.get_text(separator=" ").strip().replace("\xa0", " ")
+                if raw_name and not raw_name.endswith(":"):
+                    raw_name = raw_name + ":"
 
-            for item in property_items:
-                try:
-                    # Suche nach dem Element mit dem Eigenschaftsnamen
-                    property_name_elem = item.find(class_="propertyName")
-                    # Suche nach dem Element mit dem Eigenschaftswert
-                    property_value_elem = item.find(class_="propertyValue")
+                value = value_elem.get_text(separator=" ").strip()
+                props[raw_name] = value
 
-                    # Wenn entweder Name oder Wert fehlt, überspringen
-                    if not property_name_elem or not property_value_elem:
-                        continue
-
-                    # Extrahiere und bereinige den Text für Name und Wert
-                    property_name = property_name_elem.text.strip()
-                    property_value = property_value_elem.get_text(separator=" ").strip()
-
-                    # Speichere die Eigenschaft im Wörterbuch
-                    properties[property_name] = property_value
-
-                except Exception as e:
-                    # Fehlerprotokollierung für einzelne PropertyItems
-                    print(f"Fehler beim Extrahieren eines PropertyItems: {e}")
-
-            # Rückgabe des Wörterbuchs mit allen extrahierten Eigenschaften
-            return properties
+            return props
         except Exception as e:
-            # Allgemeine Fehlerprotokollierung für die gesamte Extraktion
-            print(f"Fehler beim Extrahieren der PropertyItems: {e}")
+            logger.error(f"Fehler beim Extrahieren der PropertyItems: {e}")
             return {}

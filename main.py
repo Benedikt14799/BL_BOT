@@ -44,12 +44,14 @@ async def main():
     # 4) Datenbank mit neuen Links füllen
     await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool)
 
+    # 5) Seiten scrapen und Detail‑Links speichern
     await scrape.scrape_and_save_pages(db_pool)
 
+    # 6) Web‑Scraping Pipeline (prefill + Detailverarbeitung) starten
+    #    Default-Category wird in scrape.perform_webscrape_async verwendet
     await scrape.perform_webscrape_async(db_pool)
 
-
-    # 5) Pool schließen
+    # 7) Pool schließen
     await db_pool.close()
 
     end_time = time.time()

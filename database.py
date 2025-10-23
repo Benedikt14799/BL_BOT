@@ -1,4 +1,3 @@
-# database.py
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,6 +13,7 @@ class DatabaseManager:
     async def create_table(db_pool):
         """
         Erstellt die benötigten Tabellen, falls sie noch nicht existieren.
+        Führt außerdem eine einfache Migration für neue Spalten durch.
         """
         async with db_pool.acquire() as conn:
             # Tabelle für Links, die noch gescraped werden sollen
@@ -99,12 +99,24 @@ class DatabaseManager:
                     Signiert_von VARCHAR(255),
                     Literarische_Bewegung TEXT,
                     Ausgabe TEXT,
-                    LinkToBL TEXT UNIQUE
+                    LinkToBL TEXT UNIQUE,
                     enriched BOOLEAN NOT NULL DEFAULT FALSE,
-
+                    SKU VARCHAR(50) UNIQUE  -- Eindeutige SKU für eBay
                 );
             """)
             logger.info("Tabelle 'library' existiert nun oder wurde neu angelegt.")
+
+            # Migration: Neue Spalten hinzufügen, falls nicht vorhanden
+            # Purchase_price (Einkaufspreis) und Purchase_shipping (BL-Versandkosten)
+            try:
+                await conn.execute("""
+                    ALTER TABLE library
+                    ADD COLUMN IF NOT EXISTS Purchase_price NUMERIC,
+                    ADD COLUMN IF NOT EXISTS Purchase_shipping NUMERIC;
+                """)
+                logger.info("Migration: Spalten Purchase_price und Purchase_shipping vorhanden oder hinzugefügt.")
+            except Exception as e:
+                logger.error(f"Migration der Spalten Purchase_price/Purchase_shipping fehlgeschlagen: {e}")
 
             # Neue Tabelle für Listings ohne gültige ISBN
             await conn.execute("""
@@ -119,31 +131,37 @@ class DatabaseManager:
 
     @staticmethod
     async def insert_library_entry(db_pool, properties: dict):
-        """
-        Fügt neue Bücher in die library-Tabelle ein.
-        """
         try:
             async with db_pool.acquire() as conn:
-                await conn.execute("""
-                    INSERT INTO library 
-                    (Autor, Buchtitel, Sprache, Thematik, Verlag, Erscheinungsjahr, 
-                     CFormat, Produktart, Ausgabe, Description) 
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                """,
-                    properties.get("Autor", ""),
-                    properties.get("Buchtitel", ""),
-                    properties.get("Sprache", ""),
-                    properties.get("Thematik", ""),
-                    properties.get("Verlag", ""),
-                    properties.get("Erscheinungsjahr", ""),
-                    properties.get("CFormat", ""),
-                    properties.get("Produktart", ""),
-                    properties.get("Ausgabe", ""),
-                    properties.get("Description", "")
-                )
-                logger.info(f"Neu hinzugefügt: {properties.get('Buchtitel')} von {properties.get('Autor')}")
+                # Einfügen und ID zurückbekommen
+                result = await conn.fetchrow("""
+                                             INSERT INTO library
+                                             (Autor, Buchtitel, Sprache, Thematik, Verlag, Erscheinungsjahr,
+                                              CFormat, Produktart, Ausgabe, Description)
+                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id
+                                             """,
+                                             properties.get("Autor", ""),
+                                             properties.get("Buchtitel", ""),
+                                             properties.get("Sprache", ""),
+                                             properties.get("Thematik", ""),
+                                             properties.get("Verlag", ""),
+                                             properties.get("Erscheinungsjahr", ""),
+                                             properties.get("CFormat", ""),
+                                             properties.get("Produktart", ""),
+                                             properties.get("Ausgabe", ""),
+                                             properties.get("Description", "")
+                                             )
+
+                # SKU generieren und setzen
+                book_id = result['id']
+                sku = f"BOOK_{book_id}"
+
+                await conn.execute("UPDATE library SET SKU = $1 WHERE id = $2", sku, book_id)
+
+                logger.info(f"Neu hinzugefügt mit SKU {sku}: {properties.get('Buchtitel')}")
+
         except Exception as e:
-            logger.error(f"Fehler beim Einfügen von {properties.get('Buchtitel')}: {e}")
+            logger.error(f"Fehler beim Einfügen: {e}")
 
     @staticmethod
     async def record_missing_listing(db_pool, library_id: int, link: str, reason: str):
@@ -173,7 +191,7 @@ class DatabaseManager:
                     sitetoscrape_id = row["id"]
                     await conn.execute("""
                         UPDATE library 
-                        SET sitetoscrape_id = $1 
+                        SET sitetoscrape_id = $1
                         WHERE sitetoscrape_id IS NULL
                     """, sitetoscrape_id)
             logger.info("Fremdschlüssel-Zuordnung abgeschlossen.")
@@ -187,13 +205,10 @@ class DatabaseManager:
         :param db_pool: asyncpg-Pool
         :param category_name: Name der Kategorie, z.B. "/Bücher & Zeitschriften/Bücher"
         """
-        # (1) Kein input() mehr hier — category_name kommt als Argument rein
         if not category_name:
-            # Debug-Log für den Default-Fall
             logger.debug("Kein Category Name übergeben – verwende Default '/Bücher & Zeitschriften/Bücher'")
             category_name = "/Bücher & Zeitschriften/Bücher"
 
-        # (5) Debug-Log für SQL und Parameter
         sql = """
             UPDATE library
             SET

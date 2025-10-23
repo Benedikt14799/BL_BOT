@@ -4,7 +4,7 @@ import re
 import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qsl, urlencode, urlunparse, urljoin
+from urllib.parse import urlparse, parse_qsl, parse_qs, urlencode, urlunparse, urljoin
 
 import bl_processing
 import database
@@ -20,6 +20,7 @@ semaphore = asyncio.Semaphore(20)
 # Basis-URL für relative Pfade
 BASE_URL = "https://www.booklooker.de"
 
+
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
     GET-Request, wirft bei Fehlern und liefert den HTML-Text.
@@ -31,28 +32,38 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
 
 def extract_offer_links_from_page(html: str) -> list[str]:
     """
-    Parst eine Übersichtsseite und gibt alle Detail-URLs der Angebote zurück.
+    Parst eine Übersichtsseite und gibt alle Detail‑URLs der Angebote zurück.
+    (Erfasst auch gelb hinterlegte Einträge.)
     """
     soup = BeautifulSoup(html, "html.parser")
     links: list[str] = []
-    # Suche in div.resultlist_products nach div.articleRow
-    for article in soup.select("div.resultlist_products div.articleRow.resultlist_productsproduct"):
-        a_tag = article.select_one("span.artikeltitel.notranslate a")
+
+    # Nimm alle Artikel‑Container, egal ob gelb oder weiß
+    for article in soup.select("div.resultlist_products div.articleRow"):
+        # Finde das erste <a href="/.../id/..."> im Container
+        a_tag = article.find("a", href=re.compile(r"/.*/id/"))
         if not a_tag:
             continue
-        href = a_tag.get("href", "")
-        # nur Detailseiten mit '/id/'
-        if "/id/" in href:
-            full_url = urljoin(BASE_URL, href)
-            links.append(full_url)
-        else:
-            logger.debug(f"Übersprungen (kein Detail-Link): {href}")
+
+        href = a_tag.get("href")
+        if not href:
+            continue
+
+        # nur echte Detailseiten mit '/id/'
+        if "/id/" not in href:
+            continue
+
+        full_url = urljoin(BASE_URL, href)
+        links.append(full_url)
+
     return links
+
 
 async def fetch_and_process(session: aiohttp.ClientSession, link: str):
     """
     Ermittelt für eine Basis-URL die Seiten- und Bücherzahl.
     Gibt (link, highest_page, books_count) zurück.
+    ROBUSTE Paginierung: erkennt 'page' aus Links und Text.
     """
     async with semaphore:
         try:
@@ -64,16 +75,41 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
             books_count = int(number_pattern.search(div.text).group()) \
                 if div and number_pattern.search(div.text) else 0
 
-            # Seitenzahl
-            nums = [int(e.text) for e in soup.find_all(class_='PageNavNumItem') if e.text.isdigit()]
-            highest_page = max(nums) if nums else 1
+            # ROBUST: Seitenzahl
+            pages = set()
 
-            logger.info(f"{link} → Seiten: {highest_page}, Bücher: {books_count}")
+            # 1) Alle anklickbaren Links prüfen, ob sie page=<n> tragen
+            for a in soup.select('.pagelinks a, .PageNavNumItem a, a'):
+                href = a.get('href')
+                if not href:
+                    continue
+                try:
+                    parsed = urlparse(href)
+                    qs = parse_qs(parsed.query)
+                    p = qs.get('page', [])
+                    if p and p[0].isdigit():
+                        pages.add(int(p[0]))
+                except Exception:
+                    pass
+
+            # 2) zusätzlich Zahlen aus Navigations-Elementen lesen
+            for e in soup.select('.PageNavNumItem, .pagelinks, .pagination, .pagelinks_top, .pagelinks_bottom'):
+                txt = (e.get_text() or '').strip()
+                for m in re.findall(r'\b\d+\b', txt):
+                    try:
+                        pages.add(int(m))
+                    except ValueError:
+                        pass
+
+            highest_page = max(pages) if pages else 1
+
+            logger.info(f"{link} → erkannte Seiten: {highest_page}, Bücher: {books_count}")
             return link, highest_page, books_count
 
         except Exception as e:
             logger.error(f"Fehler bei fetch_and_process für {link}: {e}")
             return None
+
 
 async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
     """
@@ -116,16 +152,16 @@ def build_page_url(base_link: str, page: int) -> str:
     q.update({"setMediaType": "0", "page": str(page)})
     return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
 
+
 async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list[str]:
     """
     Lädt eine Übersichtsseite und gibt alle Angebots-Detaillinks zurück.
-    Zusätzlich loggt er jede gefundene URL, damit du sie prüfen kannst.
+    Zusätzlich loggt er bei Bedarf jede gefundene URL im Debug-Level.
     """
     try:
         html_content = await fetch_html(session, page_url)
         links = extract_offer_links_from_page(html_content)
         logger.info(f"Seite {page_url}: {len(links)} Detail-Links gefunden")
-        # Ausgabe aller Links zum Prüfen
         for link in links:
             logger.debug(f"Gefundener Link auf {page_url}: {link}")
         if not links:
@@ -161,6 +197,7 @@ async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: st
         logger.error(f"Fehler beim Speichern der Links von {page_url}: {e}")
         return 0
 
+
 async def scrape_and_save_pages(db_pool):
     """
     1) Liest alle sitetoscrape-Einträge mit Seitenzahl > 0 aus.
@@ -181,13 +218,22 @@ async def scrape_and_save_pages(db_pool):
     tasks = []
     async with aiohttp.ClientSession() as session:
         for r in rows:
-            for p in range(1, r["anzahlseiten"] + 1):
-                page_url = build_page_url(r["link"], p)
+            base = r["link"]
+            n_pages = r["anzahlseiten"]
+            if n_pages <= 0:
+                continue
+
+            first_url = build_page_url(base, 1)
+            last_url = build_page_url(base, n_pages)
+            logger.info(f"Erzeuge Seiten für {base}: 1..{n_pages} (z.B. {first_url} ... {last_url})")
+
+            for p in range(1, n_pages + 1):
+                page_url = build_page_url(base, p)
                 tasks.append(fetch_and_parse_and_store(session, page_url, db_pool))
 
         logger.info(f"Starte Scraping von {len(tasks)} Seiten…")
         for i in range(0, len(tasks), 50):
-            results = await asyncio.gather(*tasks[i : i + 50], return_exceptions=True)
+            results = await asyncio.gather(*tasks[i: i + 50], return_exceptions=True)
             for res in results:
                 if isinstance(res, int):
                     total_scraped += res
@@ -198,72 +244,148 @@ async def scrape_and_save_pages(db_pool):
     logger.info("Fremdschlüssel in library gesetzt.")
 
 
+# ===============================
+# Detailverarbeitung – optimiert
+# ===============================
+
+# Konfiguration für Detailphase
+DETAIL_SEMAPHORE = asyncio.Semaphore(50)  # behutsame Parallelität (Serverfreundlich anpassen)
+MAX_RETRIES = 2
+BATCH_SIZE = 200  # für gather in Blöcken
+
+
+async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
+    """
+    Verarbeitet EIN library-Datensatz robust:
+    - ISBN prüfen (löscht bei missing)
+    - Price
+    - Pictures (verschiebt bei missing_photo)
+    - Properties
+    """
+    num, link = row["id"], row["linktobl"]
+
+    # Retry-Loop pro Eintrag
+    attempt = 0
+    while attempt <= MAX_RETRIES:
+        attempt += 1
+        try:
+            async with DETAIL_SEMAPHORE:
+                # ISBN-Check (löscht bei fehlender ISBN, gibt dann False zurück)
+                has_isbn, isbn, soup = await isbn_processing.process_entry(session, link, num, db_pool)
+                if not has_isbn:
+                    # bereits in missing_listings verschoben und gelöscht
+                    return "deleted_missing_isbn"
+
+                # Preis berechnen und speichern
+                await price_processing.PriceProcessing.get_price(session, soup, num, db_pool)
+
+                # Bilder extrahieren und speichern
+                # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
+                await picture_processing.PictureProcessing.get_pictures_with_dnb(
+                    session, soup, num, db_pool, isbn or ""
+                )
+
+                # Properties extrahieren und speichern
+                await bl_processing.PropertyToDatabase.process_and_save(soup, num, db_pool)
+
+                return "ok"
+
+        except Exception as e:
+            logger.error(f"[{num}] Fehler in Detailverarbeitung (Versuch {attempt}/{MAX_RETRIES}): {e}")
+            if attempt > MAX_RETRIES:
+                # Als missing_listings markieren, damit keine „toten“ Datensätze bleiben
+                try:
+                    from database import DatabaseManager
+                    await DatabaseManager.record_missing_listing(db_pool, num, link, "detail_error")
+                    async with db_pool.acquire() as conn:
+                        await conn.execute("DELETE FROM library WHERE id = $1", num)
+                    logger.warning(f"[{num}] Nach Fehler und {MAX_RETRIES} Retries in missing_listings verschoben und gelöscht.")
+                except Exception as e2:
+                    logger.error(f"[{num}] Fehler beim Verschieben nach detail_error: {e2}")
+                return "error"
+            # kurzer Backoff vor erneutem Versuch
+            await asyncio.sleep(0.5 * attempt)
+
+
 async def process_library_links_async(db_pool):
     """
-    Verarbeitet alle Einträge in library:
-    - Ruft process_entry ab (liefert nun auch soup)
-    - Nutzt dieses soup für Preis-, Bild- und Property-Processing
+    Parallele, robuste Verarbeitung aller Einträge in library.
+    - Batches mit gather
+    - Progress-Logging alle BATCH_SIZE Datensätze
+    - Retry bei transienten Fehlern
+    - Keine „toten“ Datensätze: bei fehlenden Bildern oder finalen Fehlern verschieben/löschen
     """
     try:
         async with db_pool.acquire() as conn:
             rows = await conn.fetch("SELECT id, LinkToBL FROM library;")
 
+        total = len(rows)
+        if total == 0:
+            logger.info("Keine Einträge in library zu verarbeiten.")
+            return
+
+        logger.info(f"Starte Detailverarbeitung für {total} Einträge…")
+
+        processed = 0
         async with aiohttp.ClientSession() as session:
-            for row in rows:
-                num, link = row["id"], row["linktobl"]
-                has_isbn, isbn, soup = await isbn_processing.process_entry(
-                    session, link, num, db_pool
-                )
-                if not has_isbn:
-                    # wurde bereits in missing_listings verschoben
-                    continue
+            # in Batches verarbeiten
+            for i in range(0, total, BATCH_SIZE):
+                batch = rows[i: i + BATCH_SIZE]
+                tasks = [asyncio.create_task(_process_one_entry(session, row, db_pool)) for row in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                await price_processing.PriceProcessing.get_price(session, soup, num, db_pool)
-                await picture_processing.PictureProcessing.get_pictures_with_dnb(
-                    session,
-                    soup,
-                    num,
-                    db_pool,
-                    isbn
-                )
+                # Zählen/Loggen
+                ok = sum(1 for r in results if r == "ok")
+                deleted_isbn = sum(1 for r in results if r == "deleted_missing_isbn")
+                errors = sum(1 for r in results if r == "error" or isinstance(r, Exception))
 
-                await bl_processing.PropertyToDatabase.process_and_save(
-                    soup, num, db_pool
-                )
+                processed += len(batch)
+                logger.info(f"Progress: {processed}/{total} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
+
+        # Finaler Cleanup: fehlende Fotos sicher entfernen (Soll-Regel)
+        async with db_pool.acquire() as conn:
+            missing_photo_rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE COALESCE(photo,'') = ''")
+            if missing_photo_rows:
+                from database import DatabaseManager
+                for r in missing_photo_rows:
+                    try:
+                        await DatabaseManager.record_missing_listing(db_pool, r["id"], r["linktobl"], "missing_photo_final")
+                        await conn.execute("DELETE FROM library WHERE id = $1", r["id"])
+                    except Exception as e:
+                        logger.error(f"[{r['id']}] Cleanup fehlende Fotos: {e}")
+                logger.warning(f"Cleanup: {len(missing_photo_rows)} Einträge ohne Fotos endgültig verschoben/gelöscht.")
 
     except Exception as e:
         logger.error(f"Fehler in process_library_links_async: {e}")
 
 
-async def perform_webscrape_async(db_pool):
+async def perform_webscrape_async(db_pool, category_name: str = "/Bücher & Zeitschriften/Bücher"):
     """
     Führt die gesamte Webscraping-Pipeline aus:
-    1. Fragt einmalig den Category Name ab.
-    2. Füllt die Tabelle `library` mit statischen Daten (`prefill_db_with_static_data`).
-    3. Verarbeitet Buch-Links und ruft zusätzliche Daten ab (`process_library_links_async`).
+    1) Füllt die Tabelle `library` mit statischen Daten (Default-Category).
+    2) Verarbeitet Buch-Links und ruft zusätzliche Daten ab.
     """
     try:
-        # 1) Kategorie einmalig abfragen (blockiert nur vor Async-Operationen)
-        category_name = input("Bitte geben Sie den Category Name ein: ").strip() or "/Bücher & Zeitschriften/Bücher"
-
-        # 2) Statische Daten vorfüllen
+        # Statische Daten vorfüllen (Category)
         await DatabaseManager.prefill_db_with_static_data(db_pool, category_name)
 
-        # 3) Webscraping und Verarbeitung von Buchdaten
+        # Detailverarbeitung
         await process_library_links_async(db_pool)
 
     except Exception as e:
         logger.error(f"Fehler in perform_webscrape_async: {e}")
 
 
-"""
-Funktion: extract_properties
-----------------------------
-- Extrahiert Eigenschaften aus einem BeautifulSoup-Objekt.
-- Durchsucht HTML-Elemente mit spezifischen Klassen und sammelt Eigenschaftsnamen und Werte.
-- Gibt ein Wörterbuch mit den extrahierten Eigenschaften zurück.
-"""
+# ===============================
+# Properties-Extractor (Hilfsfun.)
+# ===============================
+
 def extract_properties(soup):
+    """
+    Extrahiert Eigenschaften aus einem BeautifulSoup-Objekt.
+    Durchsucht HTML-Elemente mit spezifischen Klassen und sammelt Eigenschaftsnamen und Werte.
+    Gibt ein Wörterbuch mit den extrahierten Eigenschaften zurück.
+    """
     properties = {}
     property_items = soup.find_all(class_=re.compile(r"propertyItem_\d+"))
 
