@@ -48,18 +48,25 @@ async def main():
     # 2) Tabellen anlegen (falls noch nicht vorhanden)
     await DatabaseManager.create_table(db_pool)
 
-    # 3) Links aus der Excel-Datei einlesen (Temporär für Test überschrieben)
+    # 3) Links aus der externen Textdatei (links.txt) einlesen
+    links_to_scrape = []
+    links_file_path = "links.txt"
     try:
-        # Zum Testen mit spezifischen Links
-        links_to_scrape = [
-            "https://www.booklooker.de/B%C3%BCcher/Gef%C3%A4ngnis+Strafvollzug/us/1995",
-            "https://www.booklooker.de/B%C3%BCcher/Kanzleif%C3%BChrung/us/866",
-            "https://www.booklooker.de/B%C3%BCcher/Karibische+K%C3%BCche/us/2658"
-        ]
-        logger.info(f"{len(links_to_scrape)} Test-Links werden manuell verwendet.")
+        if os.path.exists(links_file_path):
+            with open(links_file_path, "r", encoding="utf-8") as file:
+                for line in file:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        links_to_scrape.append(line)
+            logger.info(f"{len(links_to_scrape)} Zeilen (Links) aus '{links_file_path}' eingelesen.")
+        else:
+            logger.warning(f"Die Datei '{links_file_path}' wurde nicht gefunden. Es werden keine neuen Links hinzugefügt.")
     except Exception as e:
-        logger.error(f"Fehler: {e}")
+        logger.error(f"Fehler beim Einlesen von '{links_file_path}': {e}")
         return
+
+    if not links_to_scrape:
+        logger.info("Es wurden keine neuen Links zum Scrapen übergeben (links.txt ist leer oder fehlt). Alte Einträge werden im nächsten Schritt verarbeitet.")
 
     # 4) Datenbank mit neuen Links füllen
     await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool)
