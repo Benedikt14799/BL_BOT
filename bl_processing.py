@@ -67,12 +67,40 @@ class PropertyToDatabase:
         return s
 
     @staticmethod
-    def truncate_title(title: str, max_length: int = 80) -> str:
-        if len(title) <= max_length:
-            return title
-        truncated = title[:max_length]
-        truncated = truncated.rsplit(" ", 1)[0] if " " in truncated else truncated
-        return truncated + " …"
+    def build_ebay_title(props_norm: dict, max_len: int = 80) -> str:
+        titel = str(props_norm.get("titel", "")).strip()
+        autor = str(props_norm.get("autor/in", "")).strip()
+        produktart = str(props_norm.get("produktart", props_norm.get("einband", ""))).strip()
+
+        # Fallback: wenn der Titel ansich schon extrem lang ist, sauber am Wortende kappen (max 80)
+        def clean_truncate(s: str, m: int) -> str:
+            if len(s) <= m:
+                return s
+            tmp = s[:m]
+            return tmp.rsplit(" ", 1)[0] if " " in tmp else tmp
+
+        components = []
+        if titel and titel.lower() != "keine angabe": components.append(titel)
+        if autor and autor.lower() != "keine angabe": components.append(f"- {autor}")
+        if produktart and produktart.lower() != "keine angabe": components.append(f"({produktart})")
+
+        if not components:
+            return "Buch"
+
+        # Von links nach rechts aufbauen, solang < 80 Zeichen
+        final_str = components[0]
+        # Wenn nur der Titel schon zu lang ist:
+        if len(final_str) > max_len:
+            return clean_truncate(final_str, max_len)
+            
+        for c in components[1:]:
+            test_str = final_str + " " + c
+            if len(test_str) <= max_len:
+                final_str = test_str
+            else:
+                break
+                
+        return final_str
 
     @staticmethod
     def truncate_to_max_length(text: str, max_length: int = 65) -> str:
@@ -338,12 +366,11 @@ class PropertyToDatabase:
                 if key_norm == "stichwörter":
                     val = PropertyToDatabase.normalize_thematik(val)
 
-                # Titel
+                # Buchtitel explizit speichern (wird am Ende nochmal für generierten Titel genutzt)
                 if key_norm == "titel":
-                    temp_values["Title"] = PropertyToDatabase.truncate_title(val)
                     temp_values["Buchtitel"] = val
-                    db_columns += ["Title", "Buchtitel"]
-                    db_values  += [temp_values["Title"], temp_values["Buchtitel"]]
+                    db_columns += ["Buchtitel"]
+                    db_values  += [temp_values["Buchtitel"]]
                     continue
 
                 # Zustand
@@ -398,6 +425,11 @@ class PropertyToDatabase:
                 if inferred and inferred != "Keine Angabe":
                     db_columns.append("Produktart")
                     db_values.append(inferred)
+
+            # Ebay Title erzeugen
+            ebay_title = PropertyToDatabase.build_ebay_title(normalized_props)
+            db_columns.append("Title")
+            db_values.append(ebay_title)
 
             # Beschreibung
             description_html = PropertyToDatabase.build_description_html(normalized_props)
@@ -473,6 +505,7 @@ class PropertyToDatabase:
         orig_beschr = val("beschreibung") or val("beschreibungstext") or val("artikelbeschreibung")
         zustands_text = val("erhaltungszustand_detail")
         seitenanzahl = val("seitenanzahl")
+        abstract = val("abstract")
 
         html = f"""
         <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333;">
@@ -503,12 +536,18 @@ class PropertyToDatabase:
             
         html += "</div>"
         
+        beschreibungs_html = ""
+        if abstract:
+            beschreibungs_html += f"<div style='margin-bottom: 15px;'><h4 style='color: #2c3e50; margin-bottom: 5px; font-size: 16px; margin-top: 0;'>Klappentext / Inhalt</h4><p style='margin-top:0;'>{abstract}</p></div>"
         if orig_beschr:
+            beschreibungs_html += f"<div><h4 style='color: #2c3e50; margin-bottom: 5px; font-size: 16px; margin-top: 0;'>Zusatzinformationen des Verkäufers</h4><p style='margin-top:0;'>{orig_beschr}</p></div>"
+
+        if beschreibungs_html:
             html += f"""
             <div style="margin-bottom: 25px;">
                 <h3 style="color: #2c3e50; font-size: 18px; border-bottom: 2px solid #3498db; display: inline-block; padding-bottom: 3px; margin-bottom: 15px;">Beschreibung</h3>
                 <div style="background-color: #fff; border: 1px solid #e9ecef; padding: 15px; border-radius: 4px; text-align: justify; font-size: 15px; color: #444;">
-                    {orig_beschr}
+                    {beschreibungs_html}
                 </div>
             </div>
             """

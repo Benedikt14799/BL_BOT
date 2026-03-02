@@ -20,7 +20,7 @@ async def main():
     import os
     from dotenv import load_dotenv
 
-    load_dotenv("supabase.env.txt")
+    load_dotenv(".env")
     
     # Supabase liefert einen regulären Postgres-Connection-String.
     # Da Supabase unter anderem pgbouncer für direktes Polling über port 5432 / 6543 anbietet, 
@@ -33,7 +33,7 @@ async def main():
     # Damit wir flexibel bleiben, erwarten wir hier einen DATABASE_URL Eintrag.
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
-        logger.error("Keine DATABASE_URL in der .env-Datei gefunden! Bitte in supabase.env.txt hinzufügen.")
+        logger.error("Keine DATABASE_URL in der .env-Datei gefunden! Bitte in .env hinzufügen.")
         return
 
     # 1) Verbindung zur Supabase (PostgreSQL) herstellen

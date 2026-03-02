@@ -62,8 +62,12 @@ async def process_entry(
                         if f300 and f300.find('subfield', code='a'):
                             dnb_props['seitenanzahl:'] = f300.find('subfield', code='a').text.strip()
                         
+                        f520 = dnb_soup.find('datafield', tag='520')
+                        if f520 and f520.find('subfield', code='a'):
+                            dnb_props['abstract:'] = f520.find('subfield', code='a').text.strip()
+                        
                         if dnb_props:
-                            logger.info(f"[{num}] DNB Metadaten (Seitenzahl) gefunden: {dnb_props}")
+                            logger.info(f"[{num}] DNB Metadaten gefunden: {list(dnb_props.keys())}")
         except Exception as e:
             logger.warning(f"[{num}] DNB Metadaten Abruf fehlgeschlagen für {isbn}: {e}")
 
