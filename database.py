@@ -22,7 +22,9 @@ class DatabaseManager:
                     id SERIAL PRIMARY KEY,
                     link TEXT UNIQUE NOT NULL,
                     anzahlSeiten INTEGER,
-                    numbersOfBooks INTEGER
+                    numbersOfBooks INTEGER,
+                    is_scraped BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
             logger.info("Tabelle 'sitetoscrape' existiert nun oder wurde neu angelegt.")
@@ -100,23 +102,31 @@ class DatabaseManager:
                     Literarische_Bewegung TEXT,
                     Ausgabe TEXT,
                     LinkToBL TEXT UNIQUE,
-                    enriched BOOLEAN NOT NULL DEFAULT FALSE,
-                    SKU VARCHAR(50) UNIQUE  -- Eindeutige SKU für eBay
+                    SKU VARCHAR(50) UNIQUE,  -- Eindeutige SKU für eBay
+                    created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
             logger.info("Tabelle 'library' existiert nun oder wurde neu angelegt.")
 
             # Migration: Neue Spalten hinzufügen, falls nicht vorhanden
-            # Purchase_price (Einkaufspreis) und Purchase_shipping (BL-Versandkosten)
+            # Purchase_price (Einkaufspreis) und Purchase_shipping (BL-Versandkosten) sowie created_at
             try:
                 await conn.execute("""
                     ALTER TABLE library
                     ADD COLUMN IF NOT EXISTS Purchase_price NUMERIC,
-                    ADD COLUMN IF NOT EXISTS Purchase_shipping NUMERIC;
+                    ADD COLUMN IF NOT EXISTS Purchase_shipping NUMERIC,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW(),
+                    DROP COLUMN IF EXISTS enriched;
                 """)
-                logger.info("Migration: Spalten Purchase_price und Purchase_shipping vorhanden oder hinzugefügt.")
+                
+                await conn.execute("""
+                    ALTER TABLE sitetoscrape
+                    ADD COLUMN IF NOT EXISTS is_scraped BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW();
+                """)
+                logger.info("Migration: Struktur von library und sitetoscrape aktualisiert (Masterdata & Versionierung).")
             except Exception as e:
-                logger.error(f"Migration der Spalten Purchase_price/Purchase_shipping fehlgeschlagen: {e}")
+                logger.error(f"Migration der Tabellenstrukturen fehlgeschlagen: {e}")
 
             # Neue Tabelle für Listings ohne gültige ISBN
             await conn.execute("""

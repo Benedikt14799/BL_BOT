@@ -207,7 +207,7 @@ async def scrape_and_save_pages(db_pool):
     """
     async with db_pool.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT id, link, anzahlSeiten, numbersOfBooks FROM sitetoscrape WHERE anzahlSeiten > 0;"
+            "SELECT id, link, anzahlSeiten, numbersOfBooks FROM sitetoscrape WHERE anzahlSeiten > 0 AND (is_scraped IS NULL OR is_scraped = FALSE);"
         )
     if not rows:
         logger.info("Keine Seiten zum Scrapen.")
@@ -241,6 +241,12 @@ async def scrape_and_save_pages(db_pool):
                     total_scraped += res
 
     logger.info(f"Erwartet (numbersOfBooks insgesamt): {total_expected}, Gefunden (gespeichert): {total_scraped}")
+
+    if rows:
+        scraped_ids = [r["id"] for r in rows]
+        async with db_pool.acquire() as conn:
+            await conn.execute("UPDATE sitetoscrape SET is_scraped = TRUE WHERE id = ANY($1)", scraped_ids)
+        logger.info(f"{len(scraped_ids)} Basis-Links (Kategorien) erfolgreich als 'gescrapt' markiert.")
 
 
 # ===============================
