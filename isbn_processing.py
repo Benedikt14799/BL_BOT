@@ -1,13 +1,16 @@
 # isbn_processing.py
 import logging
 import re
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict
 import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
 
 from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+dnb_xml_semaphore = asyncio.Semaphore(5)
 
 # Regex zum Finden von ISBN-13 bzw. ISBN-10 in beliebigem Text
 ISBN13_RE = re.compile(r"\b97[89]\d{10}\b")
@@ -18,29 +21,25 @@ async def process_entry(
     link: str,
     num: int,
     db_pool
-) -> Tuple[bool, Optional[str], Optional[BeautifulSoup]]:
+) -> Tuple[bool, Optional[str], Optional[BeautifulSoup], Optional[Dict]]:
     from scrape import fetch_html, extract_properties
 
     try:
         html_content = await fetch_html(session, link)
-        soup = BeautifulSoup(html_content, "html.parser")
+        soup = BeautifulSoup(html_content, "lxml")
 
         props = extract_properties(soup)
         raw = props.get("ISBN") or props.get("ISBN:")
         if not raw:
             logger.warning(f"Artikel {num} ohne ISBN – verschiebe.")
             await DatabaseManager.record_missing_listing(db_pool, num, link, "missing_isbn")
-            async with db_pool.acquire() as conn:
-                await conn.execute("DELETE FROM library WHERE id = $1", num)
-            return False, None, None
+            return False, None, None, None
 
         isbn = pick_isbn(raw)
         if not isbn:
             logger.warning(f"Artikel {num} ohne extrahierbare ISBN – verschiebe.")
             await DatabaseManager.record_missing_listing(db_pool, num, link, "missing_isbn")
-            async with db_pool.acquire() as conn:
-                await conn.execute("DELETE FROM library WHERE id = $1", num)
-            return False, None, None
+            return False, None, None, None
 
         # Gültige ISBN speichern
         async with db_pool.acquire() as conn:
@@ -48,11 +47,31 @@ async def process_entry(
                 "UPDATE library SET ISBN = $1 WHERE id = $2", isbn, num
             )
         logger.info(f"Artikel {num}: ISBN '{isbn}' gespeichert.")
-        return True, isbn, soup
+
+        # DNB API Abfrage (XML MARC21)
+        dnb_props = {}
+        dnb_url = f"https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=isbn%3D{isbn}&recordSchema=MARC21-xml"
+        try:
+            async with dnb_xml_semaphore:
+                async with session.get(dnb_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        xml_text = await resp.text()
+                        dnb_soup = BeautifulSoup(xml_text, 'xml')
+                        
+                        f300 = dnb_soup.find('datafield', tag='300')
+                        if f300 and f300.find('subfield', code='a'):
+                            dnb_props['seitenanzahl:'] = f300.find('subfield', code='a').text.strip()
+                        
+                        if dnb_props:
+                            logger.info(f"[{num}] DNB Metadaten (Seitenzahl) gefunden: {dnb_props}")
+        except Exception as e:
+            logger.warning(f"[{num}] DNB Metadaten Abruf fehlgeschlagen für {isbn}: {e}")
+
+        return True, isbn, soup, dnb_props
 
     except Exception as e:
         logger.error(f"Fehler in process_entry für Artikel {num}: {e}")
-        return False, None, None
+        return False, None, None, None
 
 
 def pick_isbn(raw: str) -> Optional[str]:

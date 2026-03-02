@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.env
+supabase.env.txt
+*.xlsx
+*.csv
+.DS_Store
+*.log
+bl_detail.html
+test_dnb.py
+inspect_html.py
+inspect_html2.py

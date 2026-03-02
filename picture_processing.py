@@ -8,6 +8,10 @@ from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
+import asyncio
+
+dnb_semaphore = asyncio.Semaphore(5)
+
 class PictureProcessing:
     """
     Verwaltet die Extraktion und Speicherung von Bildern:
@@ -33,12 +37,13 @@ class PictureProcessing:
         if isbn:
             dnb_url = f"https://portal.dnb.de/opac/mvb/cover?isbn={isbn}"
             try:
-                async with session.get(dnb_url, timeout=10) as resp:
-                    if resp.status == 200:
-                        picture_links.append(dnb_url)
-                        logger.info(f"[{num}] DNB-Cover hinzugefügt: {dnb_url}")
-                    else:
-                        logger.debug(f"[{num}] Kein DNB-Cover (Status {resp.status})")
+                async with dnb_semaphore:
+                    async with session.get(dnb_url, timeout=10) as resp:
+                        if resp.status == 200:
+                            picture_links.append(dnb_url)
+                            logger.info(f"[{num}] DNB-Cover hinzugefügt: {dnb_url}")
+                        else:
+                            logger.debug(f"[{num}] Kein DNB-Cover (Status {resp.status})")
             except aiohttp.ClientError as e:
                 logger.warning(f"[{num}] DNB-Cover-Anfrage fehlgeschlagen: {e}")
 
@@ -80,8 +85,6 @@ class PictureProcessing:
                     pass
 
                 await DatabaseManager.record_missing_listing(db_pool, num, link or "", "missing_photo")
-                async with db_pool.acquire() as conn:
-                    await conn.execute("DELETE FROM library WHERE id = $1", num)
                 logger.warning(f"[{num}] Keine Bilder gefunden – Datensatz in missing_listings verschoben und aus library gelöscht.")
             except Exception as e:
                 logger.error(f"[{num}] Fehler beim Verschieben wegen fehlender Bilder: {e}")

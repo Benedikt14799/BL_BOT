@@ -17,28 +17,48 @@ logger = logging.getLogger(__name__)
 async def main():
     start_time = time.time()
 
-    # 1) Verbindung zur Datenbank herstellen
+    import os
+    from dotenv import load_dotenv
+
+    load_dotenv("supabase.env.txt")
+    
+    # Supabase liefert einen regulären Postgres-Connection-String.
+    # Da Supabase unter anderem pgbouncer für direktes Polling über port 5432 / 6543 anbietet, 
+    # generieren wir hier den Connection-String auf Basis des URL-Formats von supabase oder nutzen ihn direkt, falls als ENV hinterlegt.
+    # Für asyncpg nutzen wir idealerweise den connection URI.
+    
+    # In der supabase.env.txt gibt es supabase_url und supabase_anon_key für die API. Für die Datenbank selbst braucht man:
+    # 'postgresql://postgres.[ProjectRef]:[PASSWORD]@aws-0-[Region].pooler.supabase.com:6543/postgres'
+    
+    # Damit wir flexibel bleiben, erwarten wir hier einen DATABASE_URL Eintrag.
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        logger.error("Keine DATABASE_URL in der .env-Datei gefunden! Bitte in supabase.env.txt hinzufügen.")
+        return
+
+    # 1) Verbindung zur Supabase (PostgreSQL) herstellen
+    logger.info("Versuche Verbindung zu Supabase über den Session Pooler (IPv4) herzustellen...")
+    
+    # Supabase erfordert explizit ssl="require"
     db_pool = await asyncpg.create_pool(
-        host="localhost",
-        database="postgres",
-        user="postgres",
-        password="1204",
-        port=5432
+        dsn=db_url,
+        ssl="require"
     )
 
     # 2) Tabellen anlegen (falls noch nicht vorhanden)
     await DatabaseManager.create_table(db_pool)
 
-    # 3) Links aus der Excel-Datei einlesen
+    # 3) Links aus der Excel-Datei einlesen (Temporär für Test überschrieben)
     try:
-        df_links = pd.read_excel('links.xlsx', header=None)
-        links_to_scrape = df_links.iloc[:, 0].dropna().tolist()
-        if not links_to_scrape:
-            logger.error("Die Excel-Datei enthält keine Links in der ersten Spalte.")
-            return
-        logger.info(f"{len(links_to_scrape)} Links wurden aus der Excel-Datei eingelesen.")
+        # Zum Testen mit spezifischen Links
+        links_to_scrape = [
+            "https://www.booklooker.de/B%C3%BCcher/Gef%C3%A4ngnis+Strafvollzug/us/1995",
+            "https://www.booklooker.de/B%C3%BCcher/Kanzleif%C3%BChrung/us/866",
+            "https://www.booklooker.de/B%C3%BCcher/Karibische+K%C3%BCche/us/2658"
+        ]
+        logger.info(f"{len(links_to_scrape)} Test-Links werden manuell verwendet.")
     except Exception as e:
-        logger.error(f"Fehler beim Einlesen der Excel-Datei: {e}")
+        logger.error(f"Fehler: {e}")
         return
 
     # 4) Datenbank mit neuen Links füllen

@@ -35,7 +35,7 @@ def extract_offer_links_from_page(html: str) -> list[str]:
     Parst eine Übersichtsseite und gibt alle Detail‑URLs der Angebote zurück.
     (Erfasst auch gelb hinterlegte Einträge.)
     """
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(html, "lxml")
     links: list[str] = []
 
     # Nimm alle Artikel‑Container, egal ob gelb oder weiß
@@ -68,7 +68,7 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
     async with semaphore:
         try:
             html = await fetch_html(session, link)
-            soup = BeautifulSoup(html, 'html.parser')
+            soup = BeautifulSoup(html, 'lxml')
 
             # Bücheranzahl
             div = soup.find('div', class_='resultlist_count')
@@ -172,7 +172,7 @@ async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list
         return []
 
 
-async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: str, db_pool) -> int:
+async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: str, db_pool, sitetoscrape_id: int) -> int:
     """
     Ruft fetch_and_parse auf, speichert jeden Angebots-Link in library und liefert die Anzahl gespeicherter Links.
     """
@@ -180,18 +180,19 @@ async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: st
     if not links:
         return 0
 
-    insert_data = [(l,) for l in links]
+    insert_data = [(l, sitetoscrape_id) for l in links]
     try:
         async with db_pool.acquire() as conn:
             await conn.executemany(
                 """
-                INSERT INTO library (LinkToBL)
-                VALUES ($1)
-                ON CONFLICT (LinkToBL) DO NOTHING
+                INSERT INTO library (LinkToBL, sitetoscrape_id)
+                VALUES ($1, $2)
+                ON CONFLICT (LinkToBL) DO UPDATE 
+                SET sitetoscrape_id = EXCLUDED.sitetoscrape_id
                 """,
                 insert_data
             )
-        logger.info(f"{len(links)} Links von {page_url} in library gespeichert.")
+        logger.info(f"{len(links)} Links von {page_url} in library gespeichert (sitetoscrape_id: {sitetoscrape_id}).")
         return len(links)
     except Exception as e:
         logger.error(f"Fehler beim Speichern der Links von {page_url}: {e}")
@@ -220,6 +221,7 @@ async def scrape_and_save_pages(db_pool):
         for r in rows:
             base = r["link"]
             n_pages = r["anzahlseiten"]
+            sitetoscrape_id = r["id"]
             if n_pages <= 0:
                 continue
 
@@ -229,7 +231,7 @@ async def scrape_and_save_pages(db_pool):
 
             for p in range(1, n_pages + 1):
                 page_url = build_page_url(base, p)
-                tasks.append(fetch_and_parse_and_store(session, page_url, db_pool))
+                tasks.append(fetch_and_parse_and_store(session, page_url, db_pool, sitetoscrape_id))
 
         logger.info(f"Starte Scraping von {len(tasks)} Seiten…")
         for i in range(0, len(tasks), 50):
@@ -239,9 +241,6 @@ async def scrape_and_save_pages(db_pool):
                     total_scraped += res
 
     logger.info(f"Erwartet (numbersOfBooks insgesamt): {total_expected}, Gefunden (gespeichert): {total_scraped}")
-
-    await DatabaseManager.set_foreignkey(db_pool)
-    logger.info("Fremdschlüssel in library gesetzt.")
 
 
 # ===============================
@@ -271,7 +270,7 @@ async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
         try:
             async with DETAIL_SEMAPHORE:
                 # ISBN-Check (löscht bei fehlender ISBN, gibt dann False zurück)
-                has_isbn, isbn, soup = await isbn_processing.process_entry(session, link, num, db_pool)
+                has_isbn, isbn, soup, dnb_props = await isbn_processing.process_entry(session, link, num, db_pool)
                 if not has_isbn:
                     # bereits in missing_listings verschoben und gelöscht
                     return "deleted_missing_isbn"
@@ -285,8 +284,13 @@ async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
                     session, soup, num, db_pool, isbn or ""
                 )
 
-                # Properties extrahieren und speichern
-                await bl_processing.PropertyToDatabase.process_and_save(soup, num, db_pool)
+                # Properties extrahieren und speichern (inkl. DNB)
+                status = await bl_processing.PropertyToDatabase.process_and_save(soup, num, db_pool, extra_props=dnb_props)
+                
+                if status == "schlechte_bewertung":
+                    logger.warning(f"Artikel {num} hat eine Verkäuferbewertung unter 98% – verschiebe.")
+                    await DatabaseManager.record_missing_listing(db_pool, num, link, "schlechte_bewertung")
+                    return "deleted_schlechte_bewertung"
 
                 return "ok"
 
@@ -297,8 +301,6 @@ async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
                 try:
                     from database import DatabaseManager
                     await DatabaseManager.record_missing_listing(db_pool, num, link, "detail_error")
-                    async with db_pool.acquire() as conn:
-                        await conn.execute("DELETE FROM library WHERE id = $1", num)
                     logger.warning(f"[{num}] Nach Fehler und {MAX_RETRIES} Retries in missing_listings verschoben und gelöscht.")
                 except Exception as e2:
                     logger.error(f"[{num}] Fehler beim Verschieben nach detail_error: {e2}")
@@ -350,7 +352,6 @@ async def process_library_links_async(db_pool):
                 for r in missing_photo_rows:
                     try:
                         await DatabaseManager.record_missing_listing(db_pool, r["id"], r["linktobl"], "missing_photo_final")
-                        await conn.execute("DELETE FROM library WHERE id = $1", r["id"])
                     except Exception as e:
                         logger.error(f"[{r['id']}] Cleanup fehlende Fotos: {e}")
                 logger.warning(f"Cleanup: {len(missing_photo_rows)} Einträge ohne Fotos endgültig verschoben/gelöscht.")

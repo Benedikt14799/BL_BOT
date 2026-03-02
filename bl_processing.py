@@ -21,6 +21,7 @@ class PropertyToDatabase:
         "einband": ["Produktart"],
         "produktart": ["Produktart"],
         "erschienen": ["Erscheinungsjahr"],
+        "versanddauer": ["Max_dispatch_time"],
     }
 
     PRODUCTART_MAP = {
@@ -292,8 +293,11 @@ class PropertyToDatabase:
         return current_productart or "Keine Angabe"
 
     @staticmethod
-    async def process_and_save(soup: BeautifulSoup, num: int, db_pool):
+    async def process_and_save(soup: BeautifulSoup, num: int, db_pool, extra_props: dict = None):
         properties = PropertyExtractor.extract_property_items(soup)
+        if extra_props:
+            properties.update(extra_props)
+            
         if not properties:
             logger.info(f"[{num}] Keine PropertyItems gefunden – überspringe Update.")
             return False
@@ -309,6 +313,21 @@ class PropertyToDatabase:
             for raw_key, val in properties.items():
                 key_norm = PropertyToDatabase._normalize_key(raw_key)
                 normalized_props[key_norm] = val
+
+            # Check seller rating
+            val_bewertung = normalized_props.get("verkaeufer_bewertung")
+            if val_bewertung:
+                m = re.search(r"(\d+[.,]\d+)", val_bewertung)
+                if m:
+                    pct = float(m.group(1).replace(",", "."))
+                    if pct < 98.0:
+                        return "schlechte_bewertung"
+                else:
+                    m = re.search(r"(\d+)", val_bewertung)
+                    if m:
+                        pct = float(m.group(1))
+                        if pct < 98.0:
+                            return "schlechte_bewertung"
 
             unmapped = []
             temp_values = {}
@@ -441,15 +460,8 @@ class PropertyToDatabase:
     @staticmethod
     def build_description_html(properties_norm: dict) -> str:
         def val(k):
-            return properties_norm.get(k)
-
-        def add(label, value):
-            if not value:
-                return ""
-            v = str(value).strip()
-            if v.lower() == "keine angabe":
-                return ""
-            return f"<p><strong>{label}:</strong> {v}</p>"
+            v = properties_norm.get(k)
+            return str(v).strip() if v and str(v).strip().lower() != "keine angabe" else ""
 
         titel   = val("titel")
         autor   = val("autor/in")
@@ -457,22 +469,58 @@ class PropertyToDatabase:
         ausgabe = val("auflage")
         sprache = val("sprache")
         zustand = val("zustand")
-        stichw  = PropertyToDatabase.normalize_thematik(val("stichwörter") or "")
+        
+        orig_beschr = val("beschreibung") or val("beschreibungstext") or val("artikelbeschreibung")
+        zustands_text = val("erhaltungszustand_detail")
+        seitenanzahl = val("seitenanzahl")
 
-        orig_beschr = val("beschreibung") or val("beschreibungstext") or val("artikelbeschreibung") or None
-
-        html = (
-            add("Titel", titel) +
-            add("Autor/in", autor) +
-            add("Verlag", verlag) +
-            add("Auflage", ausgabe) +
-            add("Sprache", sprache) +
-            add("Zustand", zustand) +
-            add("Stichwörter", stichw) +
-            add("Beschreibung", orig_beschr) +
-            "<br><p>Viel Freude beim Schmökern!</p>"
-        )
-        return html or "<p>Viel Freude beim Schmökern!</p>"
+        html = f"""
+        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333;">
+            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #3498db; padding: 20px; border-radius: 4px; margin-bottom: 25px;">
+                <h2 style="margin-top: 0; color: #2c3e50; font-size: 22px; border-bottom: 1px solid #ddd; padding-bottom: 10px; margin-bottom: 15px;">{titel if titel else "Buchdetails"}</h2>
+                <table style="width: 100%; border-collapse: collapse; font-size: 15px;">
+                    <tbody>
+        """
+        if autor: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Autor/in:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{autor}</td></tr>"
+        if verlag: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Verlag:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{verlag}</td></tr>"
+        if ausgabe: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Auflage:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{ausgabe}</td></tr>"
+        if sprache: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Sprache:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{sprache}</td></tr>"
+        if seitenanzahl: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Seiten:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{seitenanzahl}</td></tr>"
+        
+        html += """
+                    </tbody>
+                </table>
+            </div>
+            
+            <div style="margin-bottom: 25px;">
+                <h3 style="color: #2c3e50; font-size: 18px; border-bottom: 2px solid #3498db; display: inline-block; padding-bottom: 3px; margin-bottom: 15px;">Informationen zum Zustand</h3>
+        """
+        
+        if zustand:
+            html += f"<p style='margin-bottom: 8px;'><strong>Erhaltungszustand:</strong> <span style='background-color: #e8f4fd; padding: 3px 10px; border-radius: 4px; color: #2980b9;'>{zustand}</span></p>"
+        if zustands_text:
+            html += f"<div style='background-color: #fdfbf7; border-left: 4px solid #f39c12; padding: 12px; margin-top: 10px; font-style: italic;'><strong style='color: #d35400;'>Hinweis des Verkäufers:</strong> {zustands_text}</div>"
+            
+        html += "</div>"
+        
+        if orig_beschr:
+            html += f"""
+            <div style="margin-bottom: 25px;">
+                <h3 style="color: #2c3e50; font-size: 18px; border-bottom: 2px solid #3498db; display: inline-block; padding-bottom: 3px; margin-bottom: 15px;">Beschreibung</h3>
+                <div style="background-color: #fff; border: 1px solid #e9ecef; padding: 15px; border-radius: 4px; text-align: justify; font-size: 15px; color: #444;">
+                    {orig_beschr}
+                </div>
+            </div>
+            """
+            
+        html += f"""
+            <div style="text-align: center; margin-top: 30px; padding-top: 15px; border-top: 1px dashed #ccc; color: #7f8c8d; font-size: 14px;">
+                Viel Freude beim Schmökern!
+            </div>
+        </div>
+        """
+        
+        return html
 
 
 class PropertyExtractor:
@@ -494,6 +542,22 @@ class PropertyExtractor:
                 value = value_elem.get_text(separator=" ").strip()
                 props[raw_name] = value
 
+            # Extract Seller Rating
+            seller_rating = soup.find(string=re.compile(r'% positiv'))
+            if seller_rating:
+                props["verkaeufer_bewertung:"] = seller_rating.strip()
+                
+            # Extract handling time
+            dispatch = soup.find(string=re.compile(r'Versandfertig'))
+            if dispatch:
+                props["versanddauer:"] = dispatch.strip()
+
+            # Condition detailed note (Mängel) - typically found in the standard property items as "Beschreibung:" or "Zustand:"
+            # But we can also look for description div if we want
+            desc_div = soup.find("div", class_="description")
+            if desc_div:
+                props["erhaltungszustand_detail:"] = desc_div.text.strip()
+            
             return props
         except Exception as e:
             logger.error(f"Fehler beim Extrahieren der PropertyItems: {e}")

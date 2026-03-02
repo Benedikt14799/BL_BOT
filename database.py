@@ -166,16 +166,19 @@ class DatabaseManager:
     @staticmethod
     async def record_missing_listing(db_pool, library_id: int, link: str, reason: str):
         """
-        Speichert einen Datensatz, der keine oder eine ungültige ISBN hatte.
+        Speichert einen Datensatz, der keine oder eine ungültige ISBN hatte, und löscht ihn gleichzeitig aus library.
         """
         try:
             async with db_pool.acquire() as conn:
                 await conn.execute("""
+                    WITH deleted AS (
+                        DELETE FROM library WHERE id = $1
+                    )
                     INSERT INTO missing_listings (library_id, link, reason)
                     VALUES ($1, $2, $3)
                     ON CONFLICT (library_id) DO NOTHING
                 """, library_id, link, reason)
-            logger.info(f"Missing listing aufgezeichnet: id={library_id}, reason={reason}")
+            logger.info(f"Missing listing aufgezeichnet und library_id {library_id} gelöscht, Grund={reason}")
         except Exception as e:
             logger.error(f"Fehler beim Aufzeichnen von missing_listing {library_id}: {e}")
 
@@ -223,6 +226,7 @@ class DatabaseManager:
                 Payment_profile_name      = 'Zahlung für Bücher',
                 Quantity                  = 1,
                 Best_Offer_Enabled        = 1
+            WHERE Action IS NULL
         """
         logger.debug("prefill_db SQL:\n%s", sql.strip())
         logger.debug("prefill_db Parameter: category_name=%s", category_name)
@@ -233,3 +237,4 @@ class DatabaseManager:
             logger.info("Statische Standardwerte wurden erfolgreich eingefügt. Category Name: %s", category_name)
         except Exception as e:
             logger.error("Fehler in prefill_db_with_static_data: %s", e)
+
