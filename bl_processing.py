@@ -508,55 +508,48 @@ class PropertyToDatabase:
         abstract = val("abstract")
 
         html = f"""
-        <div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; max-width: 800px; margin: 0 auto; line-height: 1.6; color: #333;">
-            <div style="background-color: #f8f9fa; border: 1px solid #e9ecef; border-left: 5px solid #3498db; padding: 20px; border-radius: 4px; margin-bottom: 25px;">
-                <h2 style="margin-top: 0; color: #2c3e50; font-size: 22px; border-bottom: 1px solid #ddd; padding-bottom: 10px; margin-bottom: 15px;">{titel if titel else "Buchdetails"}</h2>
-                <table style="width: 100%; border-collapse: collapse; font-size: 15px;">
-                    <tbody>
+        <h2>{titel if titel else "Buchdetails"}</h2>
+        <table border="1" cellpadding="8" cellspacing="0" width="100%">
+            <tbody>
         """
-        if autor: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Autor/in:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{autor}</td></tr>"
-        if verlag: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Verlag:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{verlag}</td></tr>"
-        if ausgabe: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Auflage:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{ausgabe}</td></tr>"
-        if sprache: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Sprache:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{sprache}</td></tr>"
-        if seitenanzahl: html += f"<tr><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea; width: 30%; color: #555;'><strong>Seiten:</strong></td><td style='padding: 8px 0; border-bottom: 1px solid #eaeaea;'>{seitenanzahl}</td></tr>"
+        if autor: html += f"<tr><td width='30%'><strong>Autor/in:</strong></td><td>{autor}</td></tr>"
+        if verlag: html += f"<tr><td width='30%'><strong>Verlag:</strong></td><td>{verlag}</td></tr>"
+        if ausgabe: html += f"<tr><td width='30%'><strong>Auflage:</strong></td><td>{ausgabe}</td></tr>"
+        if sprache: html += f"<tr><td width='30%'><strong>Sprache:</strong></td><td>{sprache}</td></tr>"
+        if seitenanzahl: html += f"<tr><td width='30%'><strong>Seiten:</strong></td><td>{seitenanzahl}</td></tr>"
         
         html += """
-                    </tbody>
-                </table>
-            </div>
-            
-            <div style="margin-bottom: 25px;">
-                <h3 style="color: #2c3e50; font-size: 18px; border-bottom: 2px solid #3498db; display: inline-block; padding-bottom: 3px; margin-bottom: 15px;">Informationen zum Zustand</h3>
+            </tbody>
+        </table>
+        
+        <br>
+        <hr>
+        <h3>Informationen zum Zustand</h3>
         """
         
         if zustand:
-            html += f"<p style='margin-bottom: 8px;'><strong>Erhaltungszustand:</strong> <span style='background-color: #e8f4fd; padding: 3px 10px; border-radius: 4px; color: #2980b9;'>{zustand}</span></p>"
+            html += f"<p><strong>Erhaltungszustand:</strong> <br> {zustand}</p>"
         if zustands_text:
-            html += f"<div style='background-color: #fdfbf7; border-left: 4px solid #f39c12; padding: 12px; margin-top: 10px; font-style: italic;'><strong style='color: #d35400;'>Hinweis des Verkäufers:</strong> {zustands_text}</div>"
+            html += f"<blockquote><i><strong>Hinweis des Verkäufers:</strong> {zustands_text}</i></blockquote>"
             
-        html += "</div>"
-        
         beschreibungs_html = ""
         if abstract:
-            beschreibungs_html += f"<div style='margin-bottom: 15px;'><h4 style='color: #2c3e50; margin-bottom: 5px; font-size: 16px; margin-top: 0;'>Klappentext / Inhalt</h4><p style='margin-top:0;'>{abstract}</p></div>"
+            beschreibungs_html += f"<h4>Klappentext / Inhalt</h4><p>{abstract}</p>"
         if orig_beschr:
-            beschreibungs_html += f"<div><h4 style='color: #2c3e50; margin-bottom: 5px; font-size: 16px; margin-top: 0;'>Zusatzinformationen des Verkäufers</h4><p style='margin-top:0;'>{orig_beschr}</p></div>"
+            beschreibungs_html += f"<h4>Zusatzinformationen des Verkäufers</h4><p>{orig_beschr}</p>"
 
         if beschreibungs_html:
             html += f"""
-            <div style="margin-bottom: 25px;">
-                <h3 style="color: #2c3e50; font-size: 18px; border-bottom: 2px solid #3498db; display: inline-block; padding-bottom: 3px; margin-bottom: 15px;">Beschreibung</h3>
-                <div style="background-color: #fff; border: 1px solid #e9ecef; padding: 15px; border-radius: 4px; text-align: justify; font-size: 15px; color: #444;">
-                    {beschreibungs_html}
-                </div>
-            </div>
+            <br>
+            <hr>
+            <h3>Beschreibung</h3>
+            {beschreibungs_html}
             """
             
         html += f"""
-            <div style="text-align: center; margin-top: 30px; padding-top: 15px; border-top: 1px dashed #ccc; color: #7f8c8d; font-size: 14px;">
-                Viel Freude beim Schmökern!
-            </div>
-        </div>
+            <br><br>
+            <hr>
+            <center><p><small><i>Viel Freude beim Schmökern!</i></small></p></center>
         """
         
         return html
