@@ -16,6 +16,11 @@ class DatabaseManager:
         Führt außerdem eine einfache Migration für neue Spalten durch.
         """
         async with db_pool.acquire() as conn:
+            # Eigene Sequence für die Custom-SKU erstellen (Startet z. B. bei 10000)
+            await conn.execute("""
+                CREATE SEQUENCE IF NOT EXISTS custom_sku_seq START 10000;
+            """)
+
             # Tabelle für Links, die noch gescraped werden sollen
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS sitetoscrape (
@@ -102,11 +107,36 @@ class DatabaseManager:
                     Literarische_Bewegung TEXT,
                     Ausgabe TEXT,
                     LinkToBL TEXT UNIQUE,
-                    SKU VARCHAR(50) UNIQUE,  -- Eindeutige SKU für eBay
+                    SKU VARCHAR(50) UNIQUE DEFAULT 'BL-' || LPAD(nextval('custom_sku_seq')::text, 6, '0'),  -- Eindeutige SKU für eBay
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
             logger.info("Tabelle 'library' existiert nun oder wurde neu angelegt.")
+
+            # Trigger um Custom_label_SKU synchron zu SKU zu halten
+            try:
+                await conn.execute("""
+                    CREATE OR REPLACE FUNCTION sync_custom_sku()
+                    RETURNS TRIGGER AS $$
+                    BEGIN
+                        IF NEW.sku IS NOT NULL THEN
+                            NEW.custom_label_sku := NEW.sku;
+                        END IF;
+                        RETURN NEW;
+                    END;
+                    $$ LANGUAGE plpgsql;
+                """)
+                
+                await conn.execute("""
+                    DROP TRIGGER IF EXISTS trigger_sync_sku ON library;
+                    CREATE TRIGGER trigger_sync_sku
+                    BEFORE INSERT ON library
+                    FOR EACH ROW
+                    EXECUTE FUNCTION sync_custom_sku();
+                """)
+                logger.info("Trigger 'trigger_sync_sku' für Custom-SKU Synchronisation erstellt.")
+            except Exception as e:
+                logger.error(f"Fehler beim Erstellen des Triggers: {e}")
 
             # Migration: Neue Spalten hinzufügen, falls nicht vorhanden
             # Purchase_price (Einkaufspreis) und Purchase_shipping (BL-Versandkosten) sowie created_at
@@ -148,7 +178,7 @@ class DatabaseManager:
                                              INSERT INTO library
                                              (Autor, Buchtitel, Sprache, Thematik, Verlag, Erscheinungsjahr,
                                               CFormat, Produktart, Ausgabe, Description)
-                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id
+                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, sku
                                              """,
                                              properties.get("Autor", ""),
                                              properties.get("Buchtitel", ""),
@@ -162,11 +192,7 @@ class DatabaseManager:
                                              properties.get("Description", "")
                                              )
 
-                # SKU generieren und setzen
-                book_id = result['id']
-                sku = f"BOOK_{book_id}"
-
-                await conn.execute("UPDATE library SET SKU = $1 WHERE id = $2", sku, book_id)
+                sku = result['sku']
 
                 logger.info(f"Neu hinzugefügt mit SKU {sku}: {properties.get('Buchtitel')}")
 
