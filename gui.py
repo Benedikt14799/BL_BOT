@@ -9,6 +9,7 @@ import sys
 import logging
 import asyncio
 import asyncpg
+import time
 from database import DatabaseManager
 import ebay_upload
 import scrape
@@ -67,6 +68,7 @@ class BLBotApp(tb.Window):
         logging.getLogger().setLevel(logging.INFO)
 
         self.db_pool = None
+        self.scrape_task = None
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self._run_async_loop, daemon=True).start()
 
@@ -75,17 +77,26 @@ class BLBotApp(tb.Window):
         self.loop.run_forever()
 
     def _get_db_pool(self):
+        """Thread-safe way to get the DB pool. If it doesn't exist, it creates it in the async loop."""
         if not self.db_pool:
             db_url = os.environ.get("DATABASE_URL")
             if not db_url:
                 logging.error("DATABASE_URL missing in .env")
                 return None
             try:
-                # Create pool synchronously in the async loop
-                future = asyncio.run_coroutine_threadsafe(self._init_pool(db_url), self.loop)
-                self.db_pool = future.result(timeout=10)
+                # Create pool synchronously in the async loop with a small retry
+                for attempt in range(3):
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(self._init_pool(db_url), self.loop)
+                        self.db_pool = future.result(timeout=15)
+                        break
+                    except Exception as e:
+                        if attempt == 2:
+                            raise e
+                        logging.warning(f"Connection attempt {attempt+1} failed, retrying...")
+                        time.sleep(1)
             except Exception as e:
-                logging.error(f"Failed to connect to DB: {e}")
+                logging.error(f"Failed to connect to DB after retries: {e}")
                 return None
         return self.db_pool
 
@@ -263,19 +274,31 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: self.btn_upload.configure(state='normal', text="Ausgewählte Hochladen"))
 
     def start_scraping(self):
-        self.btn_start.configure(state='disabled', text="Läuft...")
-        asyncio.run_coroutine_threadsafe(self._scrape_task(), self.loop)
+        if self.scrape_task and not self.scrape_task.done():
+            # Stop logic
+            if messagebox.askyesno("Stop", "Möchtest du den Scraping-Prozess wirklich abbrechen?"):
+                self.scrape_task.cancel()
+                logging.info("Stopp-Signal gesendet...")
+            return
+
+        self.btn_start.configure(bootstyle=DANGER, text="Scraping Stoppen")
+        self.scrape_task = asyncio.run_coroutine_threadsafe(self._scrape_task(), self.loop)
 
     async def _scrape_task(self):
-        pool = await self._get_db_pool()
+        pool = self._get_db_pool() # Note: _get_db_pool is now fixed to be thread-safe but synchronous return
         if not pool:
-            self.after(0, lambda: self.btn_start.configure(state='normal', text="Scraping Starten"))
+            self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
             return
         
         try:
-            # Re-load links from text widget just in case
-            links = self.links_text.get(1.0, tk.END).strip().split('\n')
-            links = [l.strip() for l in links if l.strip()]
+            logging.info("Bot gestartet...")
+            # Re-load links from text widget
+            links = []
+            def get_links():
+                content = self.links_text.get(1.0, tk.END).strip()
+                return [l.strip() for l in content.split('\n') if l.strip()]
+            
+            links = get_links()
             
             if links:
                 await scrape.insert_links_into_sitetoscrape(links, pool)
@@ -283,12 +306,15 @@ class BLBotApp(tb.Window):
             
             await scrape.perform_webscrape_async(pool)
             
+            logging.info("Scraping erfolgreich abgeschlossen.")
             self.after(0, lambda: messagebox.showinfo("Erfolg", "Scraping abgeschlossen."))
+        except asyncio.CancelledError:
+            logging.warning("Scraping wurde vom Benutzer abgebrochen.")
         except Exception as e:
             logging.error(f"Scraping Error: {e}")
             self.after(0, lambda: messagebox.showerror("Fehler", f"Scraping fehlgeschlagen: {e}"))
         finally:
-            self.after(0, lambda: self.btn_start.configure(state='normal', text="Scraping Starten"))
+            self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
 
 
 if __name__ == "__main__":
