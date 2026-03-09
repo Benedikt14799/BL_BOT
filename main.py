@@ -3,12 +3,11 @@ import asyncio
 import logging
 import time
 
-import openpyxl
 import asyncpg
-import pandas as pd
 
 from database import DatabaseManager
 import scrape
+import ebay_upload
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO)
@@ -78,7 +77,15 @@ async def main():
     #    Default-Category wird in scrape.perform_webscrape_async verwendet
     await scrape.perform_webscrape_async(db_pool)
 
-    # 7) Pool schließen
+    # 7) Optional: zu eBay hochladen
+    upload_to_ebay = os.environ.get("UPLOAD_TO_EBAY", "").lower() == "true"
+    if upload_to_ebay:
+        logger.info("UPLOAD_TO_EBAY ist aktiviert. Starte eBay Upload-Prozess...")
+        await ebay_upload.run_upload_batch(db_pool)
+    else:
+        logger.info("UPLOAD_TO_EBAY ist nicht 'true'. eBay Upload wird übersprungen.")
+
+    # 8) Pool schließen
     await db_pool.close()
 
     end_time = time.time()

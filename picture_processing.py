@@ -21,6 +21,14 @@ class PictureProcessing:
     """
 
     @staticmethod
+    async def check_image_exists(session: aiohttp.ClientSession, url: str) -> bool:
+        try:
+            async with session.head(url, timeout=5) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    @staticmethod
     async def get_pictures_with_dnb(
         session: aiohttp.ClientSession,
         soup: BeautifulSoup,
@@ -49,16 +57,34 @@ class PictureProcessing:
 
         # 2) Booklooker-Vorschaubilder extrahieren (bis max. 24)
         preview_images = soup.find_all(class_="previewImage")[:24]
+        
+        # Fallback: Wenn es keine "previewImage" gibt, gibt es oft ein einzelnes "articleImage"
+        if not preview_images:
+            logger.debug(f"[{num}] Keine previewImage gefunden. Suche nach articleImage...")
+            preview_images = soup.find_all(class_="articleImage")[:1]
+            
         if not preview_images:
             logger.debug(f"[{num}] Keine Booklooker-Vorschaubilder gefunden.")
+            
         for idx, img in enumerate(preview_images, start=1):
             src = img.get("src")
             if not src:
                 logger.warning(f"[{num}] Bild {idx} ohne src-Attribut übersprungen.")
                 continue
-            highres = src.replace("/t/", "/x/")
-            picture_links.append(highres)
-            logger.info(f"[{num}] Bild {idx} hinzugefügt: {highres}")
+            
+            
+            # "/t/" (Thumbnails bei mehreren Bildern) oder "/bilder/" (Thumbnails bei Einzelbildern)
+            # werden potenziell durch "/x/" (maximale Auflösung) ersetzt
+            highres_candidate = src.replace("/t/", "/x/").replace("/bilder/", "/x/")
+            
+            # Überprüfen, ob das High-Res Bild existiert
+            if await PictureProcessing.check_image_exists(session, highres_candidate):
+                final_src = highres_candidate
+            else:
+                final_src = src
+            
+            picture_links.append(final_src)
+            logger.info(f"[{num}] Bild {idx} hinzugefügt: {final_src}")
 
         # 3) String bauen und in DB speichern
         result = "|".join(picture_links)

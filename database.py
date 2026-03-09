@@ -108,7 +108,10 @@ class DatabaseManager:
                     Ausgabe TEXT,
                     LinkToBL TEXT UNIQUE,
                     SKU VARCHAR(50) UNIQUE DEFAULT 'BL-' || LPAD(nextval('custom_sku_seq')::text, 6, '0'),  -- Eindeutige SKU für eBay
-                    created_at TIMESTAMP DEFAULT NOW()
+                    created_at TIMESTAMP DEFAULT NOW(),
+                    ebay_listed BOOLEAN DEFAULT FALSE,
+                    ebay_listing_id VARCHAR(255),
+                    ebay_error TEXT
                 );
             """)
             logger.info("Tabelle 'library' existiert nun oder wurde neu angelegt.")
@@ -146,6 +149,9 @@ class DatabaseManager:
                     ADD COLUMN IF NOT EXISTS Purchase_price NUMERIC,
                     ADD COLUMN IF NOT EXISTS Purchase_shipping NUMERIC,
                     ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT NOW(),
+                    ADD COLUMN IF NOT EXISTS ebay_listed BOOLEAN DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS ebay_listing_id VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS ebay_error TEXT,
                     DROP COLUMN IF EXISTS enriched;
                 """)
                 
@@ -157,6 +163,18 @@ class DatabaseManager:
                 logger.info("Migration: Struktur von library und sitetoscrape aktualisiert (Masterdata & Versionierung).")
             except Exception as e:
                 logger.error(f"Migration der Tabellenstrukturen fehlgeschlagen: {e}")
+
+            # Migration für eBay-Anbindung (ebay_item_id, ebay_listed_at, ebay_status)
+            try:
+                await conn.execute("""
+                    ALTER TABLE library 
+                    ADD COLUMN IF NOT EXISTS ebay_item_id BIGINT,
+                    ADD COLUMN IF NOT EXISTS ebay_listed_at TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS ebay_status VARCHAR(20) DEFAULT 'pending';
+                """)
+                logger.info("Migration: Struktur von library für den direkten eBay-Upload aktualisiert.")
+            except Exception as e:
+                logger.error(f"Migration für eBay-Upload fehlgeschlagen: {e}")
 
             # Neue Tabelle für Listings ohne gültige ISBN
             await conn.execute("""
