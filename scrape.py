@@ -325,7 +325,8 @@ async def process_library_links_async(db_pool):
     """
     try:
         async with db_pool.acquire() as conn:
-            rows = await conn.fetch("SELECT id, LinkToBL FROM library;")
+            # Nur Bücher verarbeiten, die noch keine Daten (ISBN) haben
+            rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE isbn IS NULL;")
 
         total = len(rows)
         if total == 0:

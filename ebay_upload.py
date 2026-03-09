@@ -8,6 +8,23 @@ logger = logging.getLogger(__name__)
 
 upload_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent uploads to respect rate limits
 
+async def validate_token(session: aiohttp.ClientSession, token: str, base_url: str) -> bool:
+    """
+    Checks if the token is still valid by making a simple metadata call.
+    """
+    url = f"{base_url}/sell/inventory/v1/inventory_item?limit=1"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with session.get(url, headers=headers) as resp:
+            if resp.status == 200:
+                return True
+            if resp.status == 401:
+                logger.error("eBay Token validation failed: 401 Unauthorized.")
+            return False
+    except Exception as e:
+        logger.error(f"Error validating eBay token: {e}")
+        return False
+
 async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None):
     """
     Fetches books that haven't been listed on eBay yet and have an ISBN (SKU).
@@ -18,22 +35,28 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
             query = """
                 SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
                        description, photo, start_price, condition_id,
-                       sprache
+                       sprache, ebay_error,
+                       COALESCE(ebay_status, 'pending') as ebay_status
                 FROM library 
                 WHERE id = ANY($1::int[])
             """
             rows = await conn.fetch(query, specific_ids)
         else:
+            # More permissive query: 
+            # - Not listed (ebay_listed is false/null OR ebay_status is not 'listed')
+            # - Has ISBN
+            # - Include those with errors so they can be retried from GUI
             query = """
                 SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
                        description, photo, start_price, condition_id,
-                       sprache
+                       sprache, ebay_error,
+                       COALESCE(ebay_status, 'pending') as ebay_status
                 FROM library 
-                WHERE ebay_listed = FALSE 
+                WHERE (ebay_listed IS FALSE OR ebay_listed IS NULL)
+                  AND (ebay_status IS NULL OR ebay_status != 'listed')
                   AND isbn IS NOT NULL 
                   AND LENGTH(isbn) > 5
-                  AND ebay_error IS NULL
-                ORDER BY id ASC LIMIT $1
+                ORDER BY id DESC LIMIT $1
             """
             rows = await conn.fetch(query, limit)
             
@@ -60,17 +83,17 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     
     aspects = {}
     if book_data.get('sprache'):
-        aspects['Sprache'] = [book_data['sprache']]
+        aspects['Sprache'] = [str(book_data['sprache'])[:65]]
     if book_data.get('autor'):
-        aspects['Autor'] = [book_data['autor']]
+        aspects['Autor'] = [str(book_data['autor'])[:65]]
     if book_data.get('publisher'):
-        aspects['Verlag'] = [book_data['publisher']]
+        aspects['Verlag'] = [str(book_data['publisher'])[:65]]
     if book_data.get('erscheinungsjahr'):
-        aspects['Erscheinungsjahr'] = [str(book_data['erscheinungsjahr'])]
+        aspects['Erscheinungsjahr'] = [str(book_data['erscheinungsjahr'])[:65]]
     if book_data.get('seitenanzahl'):
-        aspects['Seitenanzahl'] = [str(book_data['seitenanzahl']).replace('S.', '').strip()]
+        aspects['Seitenanzahl'] = [str(book_data['seitenanzahl']).replace('S.', '').strip()[:65]]
     if book_data.get('title'):
-        aspects['Buchtitel'] = [str(book_data['title'])[:80]]
+        aspects['Buchtitel'] = [str(book_data['title'])[:65]]
 
     payload = {
         "product": {
@@ -258,17 +281,22 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         'EBAY_RETURN_POLICY_ID': EBAY_RETURN_POLICY_ID
     }
 
-    logger.info("Starting eBay Upload Batch...")
-    
-    books_to_upload = await get_unlisted_books(db_pool, limit=5, specific_ids=specific_ids) # Sandbox testing batch slice
-    
-    if not books_to_upload:
-        logger.info("No unlisted books found with valid ISBN.")
-        return
-
-    logger.info(f"Found {len(books_to_upload)} books to upload.")
-
     async with aiohttp.ClientSession() as session:
+        # Token Validation before starting
+        if not await validate_token(session, EBAY_USER_TOKEN, EBAY_BASE_URL):
+            logger.error("eBay Token ist ungültig oder abgelaufen! Bitte in der GUI (Settings) erneuern.")
+            return
+
+        logger.info("Starting eBay Upload Batch...")
+        
+        books_to_upload = await get_unlisted_books(db_pool, limit=5, specific_ids=specific_ids) # Sandbox testing batch slice
+        
+        if not books_to_upload:
+            logger.info("No unlisted books found with valid ISBN.")
+            return
+
+        logger.info(f"Found {len(books_to_upload)} books to upload.")
+
         tasks = [
             asyncio.create_task(_process_single_book(session, book, db_pool, EBAY_USER_TOKEN, EBAY_BASE_URL, policies))
             for book in books_to_upload
@@ -276,3 +304,95 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         await asyncio.gather(*tasks, return_exceptions=True)
     
     logger.info("eBay Upload Batch Finished.")
+
+
+async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_price: float, token: str, base_url: str) -> bool:
+    """
+    Updates ONLY the price of an existing offer/item using the bulk_update_price endpoint.
+    """
+    url_get_offers = f"{base_url}/sell/inventory/v1/offer?sku={sku}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    try:
+        async with session.get(url_get_offers, headers=headers) as resp:
+            if resp.status != 200:
+                logger.error(f"Could not fetch offers for SKU {sku}: {resp.status}")
+                return False
+            data = await resp.json()
+            offers = data.get('offers', [])
+            if not offers:
+                logger.warning(f"No active offers found for SKU {sku} on eBay.")
+                return False
+            
+            success = True
+            for offer in offers:
+                offer_id = offer['offerId']
+                bulk_url = f"{base_url}/sell/inventory/v1/bulk_update_price"
+                bulk_payload = {
+                    "requests": [
+                        {
+                            "offerId": offer_id,
+                            "price": {
+                                "value": str(new_price),
+                                "currency": "EUR"
+                            }
+                        }
+                    ]
+                }
+                async with session.post(bulk_url, headers=headers, json=bulk_payload) as bulk_resp:
+                    if bulk_resp.status not in (200, 204):
+                        logger.error(f"Price update failed for Offer {offer_id}: {bulk_resp.status}")
+                        success = False
+                    else:
+                        logger.info(f"Price updated to {new_price} for SKU {sku} (Offer {offer_id})")
+            
+            return success
+    except Exception as e:
+        logger.error(f"Error updating price for SKU {sku}: {e}")
+        return False
+
+
+async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, base_url: str) -> bool:
+    """
+    Step 1: Find the offerId for the given SKU.
+    Step 2: Withdraw the offer (Ends the listing on eBay).
+    """
+    url_get_offers = f"{base_url}/sell/inventory/v1/offer?sku={sku}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    try:
+        async with session.get(url_get_offers, headers=headers) as resp:
+            if resp.status != 200:
+                logger.error(f"Could not fetch offers for SKU {sku} to withdraw: {resp.status}")
+                return False
+            
+            data = await resp.json()
+            offers = data.get('offers', [])
+            if not offers:
+                logger.warning(f"No active offers found for SKU {sku} to withdraw.")
+                return True # Technically "done" if no offer exists
+
+            success = True
+            for offer in offers:
+                offer_id = offer['offerId']
+                withdraw_url = f"{base_url}/sell/inventory/v1/offer/{offer_id}/withdraw"
+                
+                async with session.post(withdraw_url, headers=headers) as w_resp:
+                    if w_resp.status in (200, 204):
+                        logger.info(f"Successfully withdrawn offer {offer_id} for SKU {sku}")
+                    else:
+                        logger.error(f"Failed to withdraw offer {offer_id}: {w_resp.status}")
+                        success = False
+            
+            return success
+    except Exception as e:
+        logger.error(f"Error in withdraw_offer for SKU {sku}: {e}")
+        return False

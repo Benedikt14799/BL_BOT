@@ -13,6 +13,8 @@ import time
 from database import DatabaseManager
 import ebay_upload
 import scrape
+import price_monitor
+import price_processing
 
 # --- Redirect logging to GUI ---
 class TextHandler(logging.Handler):
@@ -69,41 +71,65 @@ class BLBotApp(tb.Window):
 
         self.db_pool = None
         self.scrape_task = None
+        self.auto_sync_active = False
+        self.sync_loop_task = None
+        
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self._run_async_loop, daemon=True).start()
+        
+        # Handle clean exit
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def _run_async_loop(self):
         asyncio.set_event_loop(self.loop)
+        # Create lock inside the running loop
+        self._db_init_lock = asyncio.Lock()
         self.loop.run_forever()
 
-    def _get_db_pool(self):
-        """Thread-safe way to get the DB pool. If it doesn't exist, it creates it in the async loop."""
+    async def _get_db_pool(self):
+        """Asynchronous way to get or create the DB pool."""
         if not self.db_pool:
             db_url = os.environ.get("DATABASE_URL")
             if not db_url:
                 logging.error("DATABASE_URL missing in .env")
                 return None
-            try:
-                # Create pool synchronously in the async loop with a small retry
-                for attempt in range(3):
-                    try:
-                        future = asyncio.run_coroutine_threadsafe(self._init_pool(db_url), self.loop)
-                        self.db_pool = future.result(timeout=15)
-                        break
-                    except Exception as e:
-                        if attempt == 2:
-                            raise e
-                        logging.warning(f"Connection attempt {attempt+1} failed, retrying...")
-                        time.sleep(1)
-            except Exception as e:
-                logging.error(f"Failed to connect to DB after retries: {e}")
-                return None
+            
+            async with self._db_init_lock: 
+                if self.db_pool: return self.db_pool
+                
+                try:
+                    logging.info("Initializing DB Pool (limited size)...")
+                    # Limit pool size to stay within Supabase free tier limits
+                    self.db_pool = await asyncio.wait_for(
+                        asyncpg.create_pool(
+                            dsn=db_url, 
+                            ssl="require",
+                            min_size=1,
+                            max_size=3,
+                            command_timeout=60
+                        ),
+                        timeout=30.0
+                    )
+                    logging.info("Pool created, verifying tables...")
+                    await DatabaseManager.create_table(self.db_pool)
+                    logging.info("DB Connection established and tables verified.")
+                except Exception as e:
+                    logging.error(f"Failed to connect to DB: {str(e)}")
+                    return None
         return self.db_pool
 
-    async def _init_pool(self, dsn):
-        pool = await asyncpg.create_pool(dsn=dsn, ssl="require")
-        await DatabaseManager.create_table(pool)
-        return pool
+    # _init_pool is no longer needed separately as logic is moved to _get_db_pool
+    
+    def on_closing(self):
+        """Cleanup before closing the window."""
+        logging.info("Closing application and cleaning up connections...")
+        if self.db_pool:
+            # Schedule pool closing in the loop
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.db_pool.close()))
+        
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.destroy()
+        sys.exit(0)
 
     def _build_dashboard(self):
         # Controls
@@ -112,6 +138,12 @@ class BLBotApp(tb.Window):
         
         self.btn_start = tb.Button(controls, text="Scraping Starten", bootstyle=SUCCESS, command=self.start_scraping)
         self.btn_start.pack(side=LEFT, padx=10)
+
+        self.btn_sync = tb.Button(controls, text="Preis-Sync Jetzt", bootstyle=INFO, command=self.sync_prices)
+        self.btn_sync.pack(side=LEFT, padx=10)
+
+        self.btn_auto_sync = tb.Button(controls, text="Auto-Sync: AUS", bootstyle=(SECONDARY, OUTLINE), command=self.toggle_auto_sync)
+        self.btn_auto_sync.pack(side=LEFT, padx=10)
 
         # Log Window
         lbl = tb.Label(self.tab_dashboard, text="Live Logs:", font=("Helvetica", 12, "bold"))
@@ -197,9 +229,23 @@ class BLBotApp(tb.Window):
         container.columnconfigure(1, weight=1)
         
         btn_save = tb.Button(container, text="Einstellungen Speichern", bootstyle=SUCCESS, command=self.save_settings)
-        btn_save.grid(row=row, columnspan=2, pady=20)
+        btn_save.grid(row=row, column=0, pady=20, padx=5)
+
+        btn_test = tb.Button(container, text="Verbindung Testen", bootstyle=INFO, command=self.test_connection)
+        btn_test.grid(row=row, column=1, pady=20, padx=5)
 
     # --- Actions ---
+    def test_connection(self):
+        asyncio.run_coroutine_threadsafe(self._test_connection_task(), self.loop)
+
+    async def _test_connection_task(self):
+        logging.info("Teste Datenbankverbindung...")
+        pool = await self._get_db_pool()
+        if pool:
+            self.after(0, lambda: messagebox.showinfo("Erfolg", "Verbindung zur Datenbank erfolgreich hergestellt!"))
+        else:
+            self.after(0, lambda: messagebox.showerror("Fehler", "Verbindung zur Datenbank fehlgeschlagen. Details in den Logs."))
+
     def _load_settings(self):
         load_dotenv(self.env_path)
         for key, var in self.settings_vars.items():
@@ -238,18 +284,33 @@ class BLBotApp(tb.Window):
     async def _refresh_task(self):
         pool = await self._get_db_pool()
         if not pool:
-            self.after(0, lambda: messagebox.showerror("Fehler", "Keine DATABASE_URL gefunden."))
+            self.after(0, lambda: messagebox.showerror("Fehler", "Keine Datenbankverbindung möglich. Bitte .env prüfen."))
             return
         
-        books = await ebay_upload.get_unlisted_books(pool, limit=100)
-        
-        def update_ui():
-            for item in self.tree.get_children():
-                self.tree.delete(item)
-            for b in books:
-                self.tree.insert("", tk.END, values=(b['id'], b['title'], b['autor'], b['start_price'], b['isbn']))
-        
-        self.after(0, update_ui)
+        try:
+            books = await ebay_upload.get_unlisted_books(pool, limit=100)
+            
+            def update_ui():
+                try:
+                    for item in self.tree.get_children():
+                        self.tree.delete(item)
+                    for b in books:
+                        # Convert all to string for safety in Treeview
+                        vals = (
+                            str(b.get('id', '')),
+                            str(b.get('title', '')),
+                            str(b.get('autor', '')),
+                            str(b.get('start_price', '')),
+                            str(b.get('isbn', ''))
+                        )
+                        self.tree.insert("", tk.END, values=vals)
+                except Exception as ex:
+                    logging.error(f"UI Update error: {ex}")
+            
+            self.after(0, update_ui)
+        except Exception as e:
+            logging.error(f"Error refreshing table: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Fehler beim Laden der Daten: {e}"))
 
     def upload_selected(self):
         selected_items = self.tree.selection()
@@ -263,15 +324,68 @@ class BLBotApp(tb.Window):
 
     async def _upload_task(self, ids):
         pool = await self._get_db_pool()
+        if not pool: return
+        
         self.after(0, lambda: self.btn_upload.configure(state='disabled', text="Uploading..."))
         try:
             await ebay_upload.run_upload_batch(pool, specific_ids=ids)
             self.after(0, lambda: messagebox.showinfo("Erfolg", "Upload abgeschlossen. Details findest du in den Logs."))
-            self.refresh_upload_table()
+            await self._refresh_task()
         except Exception as e:
             self.after(0, lambda: messagebox.showerror("Fehler", f"Upload fehlgeschlagen: {e}"))
         finally:
             self.after(0, lambda: self.btn_upload.configure(state='normal', text="Ausgewählte Hochladen"))
+
+    def sync_prices(self):
+        """Manually trigger the price monitoring sync."""
+        def run():
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._sync_task_async()))
+        
+        threading.Thread(target=run, daemon=True).start()
+
+    async def _sync_task_async(self):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        self.btn_sync.configure(state='disabled', text="Sync läuft...")
+        try:
+            logging.info("Manueller Preis-Sync gestartet...")
+            await price_monitor.run_price_monitor(pool)
+            logging.info("Preis-Sync abgeschlossen.")
+        except Exception as e:
+            logging.error(f"Fehler beim Preis-Sync: {e}")
+        finally:
+            self.btn_sync.configure(state='normal', text="Preis-Sync Jetzt")
+
+    def toggle_auto_sync(self):
+        """Toggles the background auto-sync loop."""
+        if self.auto_sync_active:
+            self.auto_sync_active = False
+            self.btn_auto_sync.configure(text="Auto-Sync: AUS", bootstyle=(SECONDARY, OUTLINE))
+            logging.info("Auto-Sync deaktiviert.")
+        else:
+            self.auto_sync_active = True
+            self.btn_auto_sync.configure(text="Auto-Sync: EIN", bootstyle=SUCCESS)
+            logging.info("Auto-Sync aktiviert (Intervall: 4 Std.).")
+            # Schedule in asyncio loop
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._auto_sync_loop()))
+
+    async def _auto_sync_loop(self):
+        """Background loop that periodically runs the price sync."""
+        interval = 4 * 3600 # 4 Hours
+        
+        while self.auto_sync_active:
+            try:
+                # We reuse the manual sync logic
+                await self._sync_task_async()
+            except Exception as e:
+                logging.error(f"Fehler im Auto-Sync Loop: {e}")
+            
+            # Wait for interval or stop signal
+            for _ in range(interval // 10): # Check every 10s if we should stop
+                if not self.auto_sync_active:
+                    break
+                await asyncio.sleep(10)
 
     def start_scraping(self):
         if self.scrape_task and not self.scrape_task.done():
@@ -285,7 +399,7 @@ class BLBotApp(tb.Window):
         self.scrape_task = asyncio.run_coroutine_threadsafe(self._scrape_task(), self.loop)
 
     async def _scrape_task(self):
-        pool = self._get_db_pool() # Note: _get_db_pool is now fixed to be thread-safe but synchronous return
+        pool = await self._get_db_pool()
         if not pool:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
             return
