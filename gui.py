@@ -10,6 +10,9 @@ import logging
 import asyncio
 import asyncpg
 import time
+import aiohttp
+from decimal import Decimal
+from bs4 import BeautifulSoup
 from database import DatabaseManager
 import ebay_upload
 import scrape
@@ -118,8 +121,6 @@ class BLBotApp(tb.Window):
                     return None
         return self.db_pool
 
-    # _init_pool is no longer needed separately as logic is moved to _get_db_pool
-    
     def on_closing(self):
         """Cleanup before closing the window."""
         logging.info("Closing application and cleaning up connections...")
@@ -179,6 +180,9 @@ class BLBotApp(tb.Window):
 
         self.btn_upload = tb.Button(controls, text="Ausgewählte Hochladen", bootstyle=PRIMARY, command=self.upload_selected)
         self.btn_upload.pack(side=LEFT, padx=5)
+
+        self.btn_comp_check = tb.Button(controls, text="Konkurrenzcheck starten", bootstyle=WARNING, command=self.start_competitor_check)
+        self.btn_comp_check.pack(side=LEFT, padx=5)
         
         columns = ("id", "title", "author", "price", "isbn")
         self.tree = tb.Treeview(self.tab_upload, columns=columns, show="headings", bootstyle=INFO, selectmode='extended')
@@ -210,7 +214,10 @@ class BLBotApp(tb.Window):
             "EBAY_DEV_ID": tk.StringVar(),
             "EBAY_CERT_ID": tk.StringVar(),
             "EBAY_USER_TOKEN": tk.StringVar(),
-            "EBAY_ENV": tk.StringVar(value="SANDBOX")
+            "EBAY_ENV": tk.StringVar(value="SANDBOX"),
+            "FIXKOSTEN_MONATLICH": tk.StringVar(value="79.95"),
+            "ANZAHL_LISTINGS": tk.StringVar(value="2500"),
+            "MINDESTMARGE": tk.StringVar(value="2.50")
         }
         
         container = tb.Frame(self.tab_settings, padding=20)
@@ -234,6 +241,15 @@ class BLBotApp(tb.Window):
         btn_test = tb.Button(container, text="Verbindung Testen", bootstyle=INFO, command=self.test_connection)
         btn_test.grid(row=row, column=1, pady=20, padx=5)
 
+        row += 1
+        self.lbl_fixkosten_hint = tb.Label(container, text="", font=("Helvetica", 8, "italic"))
+        self.lbl_fixkosten_hint.grid(row=row, column=1, sticky=W, padx=10)
+        self._update_fixkosten_hint()
+
+        # Update hint when values change
+        self.settings_vars["FIXKOSTEN_MONATLICH"].trace_add("write", lambda *a: self._update_fixkosten_hint())
+        self.settings_vars["ANZAHL_LISTINGS"].trace_add("write", lambda *a: self._update_fixkosten_hint())
+
     # --- Actions ---
     def test_connection(self):
         asyncio.run_coroutine_threadsafe(self._test_connection_task(), self.loop)
@@ -251,6 +267,16 @@ class BLBotApp(tb.Window):
         for key, var in self.settings_vars.items():
             val = os.environ.get(key, "")
             var.set(val)
+
+    def _update_fixkosten_hint(self):
+        try:
+            fk = float(self.settings_vars["FIXKOSTEN_MONATLICH"].get().replace(',', '.'))
+            n = int(self.settings_vars["ANZAHL_LISTINGS"].get())
+            if n > 0:
+                val = fk / n
+                self.lbl_fixkosten_hint.configure(text=f"= {val:.3f}€ pro Listing")
+        except:
+            self.lbl_fixkosten_hint.configure(text="Ungültige Werte")
 
     def save_settings(self):
         if not os.path.exists(self.env_path):
@@ -295,7 +321,6 @@ class BLBotApp(tb.Window):
                     for item in self.tree.get_children():
                         self.tree.delete(item)
                     for b in books:
-                        # Convert all to string for safety in Treeview
                         vals = (
                             str(b.get('id', '')),
                             str(b.get('title', '')),
@@ -355,7 +380,7 @@ class BLBotApp(tb.Window):
         except Exception as e:
             logging.error(f"Fehler beim Preis-Sync: {e}")
         finally:
-            self.btn_sync.configure(state='normal', text="Preis-Sync Jetzt")
+            self.after(0, lambda: self.btn_sync.configure(state='normal', text="Preis-Sync Jetzt"))
 
     def toggle_auto_sync(self):
         """Toggles the background auto-sync loop."""
@@ -367,7 +392,6 @@ class BLBotApp(tb.Window):
             self.auto_sync_active = True
             self.btn_auto_sync.configure(text="Auto-Sync: EIN", bootstyle=SUCCESS)
             logging.info("Auto-Sync aktiviert (Intervall: 4 Std.).")
-            # Schedule in asyncio loop
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._auto_sync_loop()))
 
     async def _auto_sync_loop(self):
@@ -376,20 +400,17 @@ class BLBotApp(tb.Window):
         
         while self.auto_sync_active:
             try:
-                # We reuse the manual sync logic
                 await self._sync_task_async()
             except Exception as e:
                 logging.error(f"Fehler im Auto-Sync Loop: {e}")
             
-            # Wait for interval or stop signal
-            for _ in range(interval // 10): # Check every 10s if we should stop
+            for _ in range(interval // 10): 
                 if not self.auto_sync_active:
                     break
                 await asyncio.sleep(10)
 
     def start_scraping(self):
         if self.scrape_task and not self.scrape_task.done():
-            # Stop logic
             if messagebox.askyesno("Stop", "Möchtest du den Scraping-Prozess wirklich abbrechen?"):
                 self.scrape_task.cancel()
                 logging.info("Stopp-Signal gesendet...")
@@ -406,8 +427,6 @@ class BLBotApp(tb.Window):
         
         try:
             logging.info("Bot gestartet...")
-            # Re-load links from text widget
-            links = []
             def get_links():
                 content = self.links_text.get(1.0, tk.END).strip()
                 return [l.strip() for l in content.split('\n') if l.strip()]
@@ -430,6 +449,89 @@ class BLBotApp(tb.Window):
         finally:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
 
+    def start_competitor_check(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("Warnung", "Bitte wähle mindestens ein Buch aus.")
+            return
+        
+        ids = [self.tree.item(item)['values'][0] for item in selected_items]
+        logging.info(f"Starte Konkurrenzcheck für {len(ids)} Bücher...")
+        asyncio.run_coroutine_threadsafe(self._competitor_check_task(ids), self.loop)
+
+    async def _competitor_check_task(self, ids):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        token = self.settings_vars["EBAY_USER_TOKEN"].get()
+        env = self.settings_vars["EBAY_ENV"].get()
+        base_url = "https://api.ebay.com" if env == "PRODUCTION" else "https://api.sandbox.ebay.com"
+        
+        if not token:
+            logging.error("Kein eBay User Token in den Settings gefunden!")
+            return
+
+        try:
+            fk_monat = Decimal(self.settings_vars["FIXKOSTEN_MONATLICH"].get().replace(',', '.'))
+            listings = int(self.settings_vars["ANZAHL_LISTINGS"].get())
+            marge_req = Decimal(self.settings_vars["MINDESTMARGE"].get().replace(',', '.'))
+        except:
+            logging.error("Ungültige Kalkulations-Parameter in den Settings!")
+            return
+
+        self.after(0, lambda: self.btn_comp_check.configure(state='disabled', text="Checking..."))
+        
+        success_count = 0
+        rentable_count = 0
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                for internal_id in ids:
+                    try:
+                        async with pool.acquire() as conn:
+                            row = await conn.fetchrow("SELECT LinkToBL FROM library WHERE id = $1", int(internal_id))
+                            if not row: continue
+                            bl_url = row['linktobl']
+
+                        async with session.get(bl_url) as resp:
+                            if resp.status != 200:
+                                logging.error(f"Konnte BL-URL nicht laden: {bl_url}")
+                                continue
+                            html = await resp.text()
+                            soup = BeautifulSoup(html, "html.parser")
+
+                        # Call get_price which handles ISBN extraction and competitor API calls
+                        await price_processing.PriceProcessing.get_price(
+                            session=session,
+                            soup=soup,
+                            num=int(internal_id),
+                            db_pool=pool,
+                            token=token,
+                            base_url=base_url,
+                            fixed_costs_monthly=fk_monat,
+                            total_listings=listings,
+                            min_margin_req=marge_req
+                        )
+                        success_count += 1
+                        
+                        async with pool.acquire() as conn:
+                            rentabel = await conn.fetchval("SELECT rentabel FROM library WHERE id = $1", int(internal_id))
+                            if rentabel: rentable_count += 1
+
+                    except Exception as e:
+                        logging.error(f"Fehler bei ID {internal_id}: {e}")
+
+            logging.info(f"Konkurrenzcheck beendet. {success_count} geprüft, {rentable_count} rentabel.")
+            self.after(0, lambda: messagebox.showinfo("Check beendet", 
+                f"Konkurrenzcheck für {success_count} Bücher abgeschlossen.\n\n"
+                f"✅ Rentabel: {rentable_count}\n"
+                f"❌ Nicht rentabel: {success_count - rentable_count}\n\n"
+                f"Details siehe Live-Logs."))
+            
+            await self._refresh_task()
+
+        finally:
+            self.after(0, lambda: self.btn_comp_check.configure(state='normal', text="Konkurrenzcheck starten"))
 
 if __name__ == "__main__":
     app = BLBotApp()

@@ -164,19 +164,33 @@ class DatabaseManager:
             except Exception as e:
                 logger.error(f"Migration der Tabellenstrukturen fehlgeschlagen: {e}")
 
-            # Migration für eBay-Anbindung (ebay_item_id, ebay_listed_at, ebay_status)
+            # Migration für eBay-Anbindung & Konkurrenzcheck v2
             try:
                 await conn.execute("""
                     ALTER TABLE library 
                     ADD COLUMN IF NOT EXISTS ebay_item_id BIGINT,
                     ADD COLUMN IF NOT EXISTS ebay_listed_at TIMESTAMP,
-                    ADD COLUMN IF NOT EXISTS ebay_status VARCHAR(20) DEFAULT 'pending';
+                    ADD COLUMN IF NOT EXISTS ebay_status VARCHAR(20) DEFAULT 'pending',
+                    ADD COLUMN IF NOT EXISTS competitor_min_preis NUMERIC,
+                    ADD COLUMN IF NOT EXISTS competitor_median_preis NUMERIC,
+                    ADD COLUMN IF NOT EXISTS empfohlener_ebay_preis NUMERIC,
+                    ADD COLUMN IF NOT EXISTS anzahl_konkurrenzangebote INTEGER,
+                    ADD COLUMN IF NOT EXISTS last_competitor_check TIMESTAMP,
+                    ADD COLUMN IF NOT EXISTS rentabel BOOLEAN,
+                    ADD COLUMN IF NOT EXISTS fehlende_marge NUMERIC,
+                    ADD COLUMN IF NOT EXISTS bl_condition VARCHAR(100),
+                    ADD COLUMN IF NOT EXISTS ebay_condition_filter VARCHAR(50),
+                    ADD COLUMN IF NOT EXISTS competitor_filter_level VARCHAR(20),
+                    ADD COLUMN IF NOT EXISTS outlier_removed_count INTEGER DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS gewinn_real NUMERIC,
+                    ADD COLUMN IF NOT EXISTS days_not_profitable INTEGER DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS next_recheck_date DATE;
                 """)
-                logger.info("Migration: Struktur von library für den direkten eBay-Upload aktualisiert.")
+                logger.info("Migration: Struktur von library für eBay-Upload und Konkurrenzcheck v2 aktualisiert.")
             except Exception as e:
-                logger.error(f"Migration für eBay-Upload fehlgeschlagen: {e}")
+                logger.error(f"Migration für eBay-Upload/Konkurrenzcheck fehlgeschlagen: {e}")
 
-            # Neue Tabelle für Listings ohne gültige ISBN
+            # Neue Tabelle für Listings ohne gültige ISBN Neue Tabelle für Listings ohne gültige ISBN
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS missing_listings (
                     library_id   INTEGER PRIMARY KEY,
@@ -195,8 +209,8 @@ class DatabaseManager:
                 result = await conn.fetchrow("""
                                              INSERT INTO library
                                              (Autor, Buchtitel, Sprache, Thematik, Verlag, Erscheinungsjahr,
-                                              CFormat, Produktart, Ausgabe, Description)
-                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id, sku
+                                              CFormat, Produktart, Ausgabe, Description, bl_condition)
+                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, sku
                                              """,
                                              properties.get("Autor", ""),
                                              properties.get("Buchtitel", ""),
@@ -207,12 +221,13 @@ class DatabaseManager:
                                              properties.get("CFormat", ""),
                                              properties.get("Produktart", ""),
                                              properties.get("Ausgabe", ""),
-                                             properties.get("Description", "")
+                                             properties.get("Description", ""),
+                                             properties.get("Erhaltungszustand", "")
                                              )
 
                 sku = result['sku']
 
-                logger.info(f"Neu hinzugefügt mit SKU {sku}: {properties.get('Buchtitel')}")
+                logger.info(f"Neu hinzugefügt mit SKU {sku}: {properties.get('Buchtitel')} (Zustand: {properties.get('Erhaltungszustand', 'Unbekannt')})")
 
         except Exception as e:
             logger.error(f"Fehler beim Einfügen: {e}")
