@@ -8,22 +8,35 @@ logger = logging.getLogger(__name__)
 
 upload_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent uploads to respect rate limits
 
-async def get_unlisted_books(db_pool, limit: int = 50):
+async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None):
     """
     Fetches books that haven't been listed on eBay yet and have an ISBN (SKU).
+    If specific_ids is provided, ONLY those IDs will be returned (ignoring limit).
     """
     async with db_pool.acquire() as conn:
-        rows = await conn.fetch("""
-            SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
-                   description, photo, start_price, condition_id,
-                   sprache
-            FROM library 
-            WHERE ebay_listed = FALSE 
-              AND isbn IS NOT NULL 
-              AND LENGTH(isbn) > 5
-              AND ebay_error IS NULL
-            ORDER BY id ASC LIMIT $1
-        """, limit)
+        if specific_ids:
+            query = """
+                SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
+                       description, photo, start_price, condition_id,
+                       sprache
+                FROM library 
+                WHERE id = ANY($1::int[])
+            """
+            rows = await conn.fetch(query, specific_ids)
+        else:
+            query = """
+                SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
+                       description, photo, start_price, condition_id,
+                       sprache
+                FROM library 
+                WHERE ebay_listed = FALSE 
+                  AND isbn IS NOT NULL 
+                  AND LENGTH(isbn) > 5
+                  AND ebay_error IS NULL
+                ORDER BY id ASC LIMIT $1
+            """
+            rows = await conn.fetch(query, limit)
+            
     return [dict(r) for r in rows]
 
 
@@ -225,7 +238,7 @@ async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, 
         await mark_as_error(db_pool, internal_id, error_str)
 
 
-async def run_upload_batch(db_pool):
+async def run_upload_batch(db_pool, specific_ids: list = None):
     EBAY_USER_TOKEN = os.environ.get("EBAY_USER_TOKEN")
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
     EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID")
@@ -247,7 +260,7 @@ async def run_upload_batch(db_pool):
 
     logger.info("Starting eBay Upload Batch...")
     
-    books_to_upload = await get_unlisted_books(db_pool, limit=5) # Sandbox testing batch slice
+    books_to_upload = await get_unlisted_books(db_pool, limit=5, specific_ids=specific_ids) # Sandbox testing batch slice
     
     if not books_to_upload:
         logger.info("No unlisted books found with valid ISBN.")
