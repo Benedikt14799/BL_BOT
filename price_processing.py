@@ -26,7 +26,7 @@ class PriceProcessing:
     """
 
     # eBay-Gebühren (Deutschland, gewerblich)
-    EBAY_PERCENTAGE_FEE = Decimal('0.12')  # 12%
+    EBAY_PERCENTAGE_FEE = Decimal('0.128')  # 12.8%
     EBAY_FIXED_FEE      = Decimal('0.35')
 
     # Rundung
@@ -493,8 +493,8 @@ class PriceProcessing:
             return {"rentabel": False, "grund": "Verkaufspreis 0"}
 
         # 1. eBay Gebühren (12.8% + 0.35€)
-        fee_rate = Decimal('0.128')
-        fee_fixed = Decimal('0.35')
+        fee_rate = PriceProcessing.EBAY_PERCENTAGE_FEE
+        fee_fixed = PriceProcessing.EBAY_FIXED_FEE
         ebay_fees = (ebay_p * fee_rate) + fee_fixed
 
         # 2. Fixkosten pro Listing
