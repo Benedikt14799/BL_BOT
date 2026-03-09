@@ -15,7 +15,7 @@ from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 number_pattern = re.compile(r"\d+")
-semaphore = asyncio.Semaphore(20)
+semaphore = asyncio.Semaphore(15)
 
 # Basis-URL für relative Pfade
 BASE_URL = "https://www.booklooker.de"
@@ -23,11 +23,23 @@ BASE_URL = "https://www.booklooker.de"
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
-    GET-Request, wirft bei Fehlern und liefert den HTML-Text.
+    GET-Request mit exponentiellem Backoff (3 Versuche), wirft bei Fehlern und liefert den HTML-Text.
     """
-    async with session.get(url, timeout=30) as resp:
-        resp.raise_for_status()
-        return await resp.text()
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries + 1):
+        try:
+            async with session.get(url, timeout=30) as resp:
+                resp.raise_for_status()
+                return await resp.text()
+        except Exception as e:
+            if attempt == max_retries:
+                logger.error(f"Alle {max_retries} Retries für {url} fehlgeschlagen: {e}")
+                raise e
+            wait_time = base_delay * (2 ** attempt)
+            logger.warning(f"Fehler bei {url}: {e}. Retry {attempt + 1}/{max_retries} in {wait_time}s...")
+            await asyncio.sleep(wait_time)
 
 
 def extract_offer_links_from_page(html: str) -> list[str]:
@@ -187,8 +199,7 @@ async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: st
                 """
                 INSERT INTO library (LinkToBL, sitetoscrape_id)
                 VALUES ($1, $2)
-                ON CONFLICT (LinkToBL) DO UPDATE 
-                SET sitetoscrape_id = EXCLUDED.sitetoscrape_id
+                ON CONFLICT (LinkToBL) DO NOTHING
                 """,
                 insert_data
             )
@@ -305,7 +316,6 @@ async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
             if attempt > MAX_RETRIES:
                 # Als missing_listings markieren, damit keine „toten“ Datensätze bleiben
                 try:
-                    from database import DatabaseManager
                     await DatabaseManager.record_missing_listing(db_pool, num, link, "detail_error")
                     logger.warning(f"[{num}] Nach Fehler und {MAX_RETRIES} Retries in missing_listings verschoben und gelöscht.")
                 except Exception as e2:
@@ -355,7 +365,6 @@ async def process_library_links_async(db_pool):
         async with db_pool.acquire() as conn:
             missing_photo_rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE COALESCE(photo,'') = ''")
             if missing_photo_rows:
-                from database import DatabaseManager
                 for r in missing_photo_rows:
                     try:
                         await DatabaseManager.record_missing_listing(db_pool, r["id"], r["linktobl"], "missing_photo_final")

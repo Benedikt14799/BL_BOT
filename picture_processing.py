@@ -86,7 +86,8 @@ class PictureProcessing:
             picture_links.append(final_src)
             logger.info(f"[{num}] Bild {idx} hinzugefügt: {final_src}")
 
-        # 3) String bauen und in DB speichern
+        # 3) String bauen und in DB speichern (Dedupliziert!)
+        picture_links = list(dict.fromkeys(picture_links))
         result = "|".join(picture_links)
         try:
             async with db_pool.acquire() as conn:

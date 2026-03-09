@@ -67,7 +67,7 @@ async def process_entry(
                             dnb_props['abstract:'] = f520.find('subfield', code='a').text.strip()
                         
                         if dnb_props:
-                            logger.info(f"[{num}] DNB Metadaten gefunden: {list(dnb_props.keys())}")
+                            logger.info(f"[{num}] DNB Metadaten extrahiert: {dnb_props}")
         except Exception as e:
             logger.warning(f"[{num}] DNB Metadaten Abruf fehlgeschlagen für {isbn}: {e}")
 
