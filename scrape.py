@@ -68,7 +68,9 @@ def extract_offer_links_from_page(html: str) -> list[str]:
         full_url = urljoin(BASE_URL, href)
         links.append(full_url)
 
-    return links
+    # Booklooker hat oft eine Listen- UND eine Kachelansicht im HTML (display:none), 
+    # was zu doppelten Links führt. Wir deduplizieren hier (Reihenfolge bleibt erhalten):
+    return list(dict.fromkeys(links))
 
 
 async def fetch_and_process(session: aiohttp.ClientSession, link: str):
@@ -195,20 +197,23 @@ async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: st
     insert_data = [(l, sitetoscrape_id) for l in links]
     try:
         async with db_pool.acquire() as conn:
-            await conn.executemany(
+            # executemany gibt keinen "RETURNING"-Wert in asyncpg direkt einfach zurück bei on conflict do nothing
+            # Wir machen es eleganter:
+            result = await conn.execute(
                 """
                 INSERT INTO library (LinkToBL, sitetoscrape_id)
-                VALUES ($1, $2)
+                VALUES %s
                 ON CONFLICT (LinkToBL) DO NOTHING
-                """,
-                insert_data
+                """ % ", ".join(f"('{l}', {sitetoscrape_id})" for l, _ in insert_data) # Direkter String-Build für Execute (einfacher für Count)
             )
-        logger.info(f"{len(links)} Links von {page_url} in library gespeichert (sitetoscrape_id: {sitetoscrape_id}).")
-        return len(links)
+            # result ist z.B. "INSERT 0 15"
+            inserted_count = int(result.split()[-1]) if result.startswith("INSERT") else 0
+            
+        logger.info(f"Seite {page_url}: {len(links)} Links gefunden -> {inserted_count} NEU in DB gespeichert (sitetoscrape_id: {sitetoscrape_id}).")
+        return inserted_count
     except Exception as e:
         logger.error(f"Fehler beim Speichern der Links von {page_url}: {e}")
         return 0
-
 
 async def scrape_and_save_pages(db_pool):
     """
@@ -251,7 +256,7 @@ async def scrape_and_save_pages(db_pool):
                 if isinstance(res, int):
                     total_scraped += res
 
-    logger.info(f"Erwartet (numbersOfBooks insgesamt): {total_expected}, Gefunden (gespeichert): {total_scraped}")
+    logger.info(f"📊 ZUSAMMENFASSUNG SCRAPING: Erwartet (laut Booklooker-Anzeige): {total_expected} | Neu in Datenbank gespeichert: {total_scraped}")
 
     if rows:
         scraped_ids = [r["id"] for r in rows]
@@ -270,7 +275,7 @@ MAX_RETRIES = 2
 BATCH_SIZE = 200  # für gather in Blöcken
 
 
-async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
+async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, token=None, base_url=None, fixed_costs=None, total_listings=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None):
     """
     Verarbeitet EIN library-Datensatz robust:
     - ISBN prüfen (löscht bei missing)
@@ -293,7 +298,31 @@ async def _process_one_entry(session: aiohttp.ClientSession, row, db_pool):
                     return "deleted_missing_isbn"
 
                 # Preis berechnen und speichern
-                await price_processing.PriceProcessing.get_price(session, soup, num, db_pool)
+                prof = await price_processing.PriceProcessing.get_price(
+                    session=session,
+                    soup=soup,
+                    num=num,
+                    db_pool=db_pool,
+                    token=token,
+                    base_url=base_url,
+                    fixed_costs_monthly=fixed_costs,
+                    total_listings=total_listings,
+                    min_margin_req=min_margin,
+                    addcost_low_mid=zusatzkosten_low,
+                    addcost_high=zusatzkosten_high
+                )
+
+                # Wenn unrentabel, in separate Tabelle verschieben
+                if prof and not prof.get('rentabel'):
+                    await DatabaseManager.record_unprofitable_listing(
+                        db_pool,
+                        num,
+                        link,
+                        f"Nicht rentabel (fehlt {prof.get('fehlende_marge')}€)",
+                        prof.get('ebay_p'),
+                        prof.get('marge')
+                    )
+                    return "deleted_unprofitable"
 
                 # Bilder extrahieren und speichern
                 # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
@@ -333,24 +362,57 @@ async def process_library_links_async(db_pool):
     - Retry bei transienten Fehlern
     - Keine „toten“ Datensätze: bei fehlenden Bildern oder finalen Fehlern verschieben/löschen
     """
+    import os
+    from decimal import Decimal
+
+    token = os.getenv("EBAY_USER_TOKEN")
+    env_str = os.getenv("EBAY_ENV", "PRODUCTION")
+    base_url = "https://api.ebay.com" if env_str == "PRODUCTION" else "https://api.sandbox.ebay.com"
+
+    try:
+        fixed_costs = Decimal(os.getenv("FIXKOSTEN_MONATLICH", "79.95").replace(',', '.'))
+        total_listings = int(os.getenv("ANZAHL_LISTINGS", "2500"))
+        min_margin = Decimal(os.getenv("MINDESTMARGE", "2.50").replace(',', '.'))
+        zusatzkosten_low = Decimal(os.getenv("ZUSATZKOSTEN_LOW_MID", "0.50").replace(',', '.'))
+        zusatzkosten_high = Decimal(os.getenv("ZUSATZKOSTEN_HIGH", "1.75").replace(',', '.'))
+    except Exception:
+        fixed_costs = Decimal("79.95")
+        total_listings = 2500
+        min_margin = Decimal("2.50")
+        zusatzkosten_low = Decimal("0.50")
+        zusatzkosten_high = Decimal("1.75")
+
     try:
         async with db_pool.acquire() as conn:
+            # Gesamtzahl aller erfassten Links ermitteln (für den Log-Vergleich)
+            total_in_db_result = await conn.fetchval("SELECT COUNT(*) FROM library;")
+            total_in_db = total_in_db_result if total_in_db_result else 0
+            
             # Nur Bücher verarbeiten, die noch keine Daten (ISBN) haben
             rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE isbn IS NULL;")
 
-        total = len(rows)
-        if total == 0:
+        total_to_process = len(rows)
+        skipped = total_in_db - total_to_process
+
+        if total_to_process == 0:
             logger.info("Keine Einträge in library zu verarbeiten.")
             return
 
-        logger.info(f"Starte Detailverarbeitung für {total} Einträge…")
+        if skipped > 0:
+            logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge (überspringe {skipped} bereits verarbeitete Bücher)…")
+        else:
+            logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge…")
 
         processed = 0
         async with aiohttp.ClientSession() as session:
             # in Batches verarbeiten
-            for i in range(0, total, BATCH_SIZE):
+            for i in range(0, total_to_process, BATCH_SIZE):
                 batch = rows[i: i + BATCH_SIZE]
-                tasks = [asyncio.create_task(_process_one_entry(session, row, db_pool)) for row in batch]
+                tasks = [
+                    asyncio.create_task(_process_one_entry(
+                        session, row, db_pool, token, base_url, fixed_costs, total_listings, min_margin, zusatzkosten_low, zusatzkosten_high
+                    )) for row in batch
+                ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Zählen/Loggen
@@ -359,7 +421,7 @@ async def process_library_links_async(db_pool):
                 errors = sum(1 for r in results if r == "error" or isinstance(r, Exception))
 
                 processed += len(batch)
-                logger.info(f"Progress: {processed}/{total} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
+                logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
 
         # Finaler Cleanup: fehlende Fotos sicher entfernen (Soll-Regel)
         async with db_pool.acquire() as conn:

@@ -88,11 +88,14 @@ class PriceProcessing:
         base_url: Optional[str] = None,
         fixed_costs_monthly: Decimal = Decimal('79.95'),
         total_listings: int = 2500,
-        min_margin_req: Decimal = Decimal('2.50')
-    ) -> Optional[Decimal]:
+        min_margin_req: Decimal = Decimal('2.50'),
+        addcost_low_mid: Decimal = Decimal('0.50'),
+        addcost_high: Decimal = Decimal('1.75')
+    ) -> Optional[dict]:
         """
         Ermittelt final_price und Marge und speichert beides. 
         Integriert den Konkurrenz-Check und die Profitabilitäts-Prüfung.
+        Gibt das Profitabilitäts-Dict zurück oder None bei Fehlern.
         """
         try:
             # 1. BL-Produkt- und Versandpreis extrahieren
@@ -118,18 +121,23 @@ class PriceProcessing:
                 if comp_data.get("gefunden"):
                     recommended_p = Decimal(str(comp_data.get("empfohlener_preis", "0")))
                     
-                    # Spezial-Strategie Kaum/Keine: Aufschlag auf Einkauf
-                    if comp_data.get("strategie") == "kaum":
-                        recommended_p = (ek + bl_shipping) * Decimal('2.0')
-                    elif comp_data.get("strategie") == "keine":
-                        recommended_p = (ek + bl_shipping) * Decimal('2.5')
+                    # Empfohlener Preis wird basierend auf Faktoren (unten) berechnet
+                    pass
 
             # 3. Finalen eBay-Preis p bestimmen
             # Falls Empfehlung vorhanden, nehmen wir diese, sonst Standard-Kalkulation
             if recommended_p and recommended_p > 0:
                 final_price = PriceProcessing._round_x99_up(recommended_p)
             else:
-                final_price = PriceProcessing._compute_final_price(ek, bl_shipping)
+                # Dynamischer Faktor für Seltenheit/Monopol
+                ek_total = ek + bl_shipping
+                strategy = comp_data.get("strategie")
+                
+                if strategy in ("Seltenheits-Bonus", "Monopol-Stellung"):
+                    factor = PriceProcessing._get_rarity_factor(ek_total, strategy)
+                    final_price = PriceProcessing._round_x99_up(ek_total * factor)
+                else:
+                    final_price = PriceProcessing._compute_final_price(ek, bl_shipping, addcost_low_mid, addcost_high)
 
             if final_price is None:
                 raise ValueError("Finalpreis konnte nicht berechnet werden.")
@@ -141,7 +149,9 @@ class PriceProcessing:
                 ebay_p=final_price,
                 monthly_fixed_costs=fixed_costs_monthly,
                 total_listings=total_listings,
-                min_margin=min_margin_req
+                min_margin=min_margin_req,
+                addcost_low_mid=addcost_low_mid,
+                addcost_high=addcost_high
             )
 
             # 5. Speichern in DB
@@ -157,9 +167,10 @@ class PriceProcessing:
             )
 
             status_str = "✅ Rentabel" if prof['rentabel'] else f"❌ Nicht rentabel (fehlt {prof['fehlende_marge']}€)"
-            logger.info(f"[{num}] {status_str} | Preis: {final_price}€ | Marge: {prof['marge']}€ | Strategie: {comp_data.get('strategie', 'standard')}")
+            logger.info(f"[{num}] {status_str} | Preis: {final_price}€ | Marge: {prof['marge']}€ | Strategie: {comp_data.get('strategie', 'Sicherheits-Modus')}")
             
-            return final_price
+            prof['ebay_p'] = float(final_price)
+            return prof
 
         except Exception as e:
             logger.error(f"[{num}] Kritischer Fehler in PriceProcessing: {e}")
@@ -214,12 +225,34 @@ class PriceProcessing:
         return fee.quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
 
     @staticmethod
-    def _additional_costs_for_price(p: Decimal) -> Decimal:
+    def _additional_costs_for_price(p: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> Decimal:
         if p < PriceProcessing.PRICE_LOW_MAX:
-            return PriceProcessing.ADDCOST_LOW_MID
+            return addcost_low_mid
         if p < PriceProcessing.PRICE_MID_MAX:
-            return PriceProcessing.ADDCOST_LOW_MID
-        return PriceProcessing.ADDCOST_HIGH
+            return addcost_low_mid
+        return addcost_high
+
+    @staticmethod
+    def _get_rarity_factor(ek_total: Decimal, strategy: str) -> Decimal:
+        """
+        Gibt den degressiven Faktor basierend auf EK+Versand und Strategie zurück.
+        Staffelung: <7€, 7-15€, 15-30€, 30-60€, 60-100€, >100€
+        """
+        if strategy == "Monopol-Stellung":
+            if ek_total < Decimal('7.00'):   return Decimal('2.7')
+            if ek_total < Decimal('15.00'):  return Decimal('2.3')
+            if ek_total < Decimal('30.00'):  return Decimal('2.0')
+            if ek_total < Decimal('60.00'):  return Decimal('1.7')
+            if ek_total < Decimal('100.00'): return Decimal('1.5')
+            return Decimal('1.3')
+        
+        else: # Seltenheits-Bonus
+            if ek_total < Decimal('7.00'):   return Decimal('2.2')
+            if ek_total < Decimal('15.00'):  return Decimal('1.9')
+            if ek_total < Decimal('30.00'):  return Decimal('1.7')
+            if ek_total < Decimal('60.00'):  return Decimal('1.5')
+            if ek_total < Decimal('100.00'): return Decimal('1.3')
+            return Decimal('1.2')
 
     @staticmethod
     def _target_margin_for_price(p: Decimal) -> Decimal:
@@ -241,32 +274,50 @@ class PriceProcessing:
         )
 
     @staticmethod
-    def _compute_final_price(ek: Decimal, bl_shipping: Decimal) -> Optional[Decimal]:
+    def _compute_final_price(ek: Decimal, bl_shipping: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> Optional[Decimal]:
         """
         Bestimmt den kleinstmöglichen Endpreis p, der die Zielmarge erfüllt,
         wendet psychologisches Runden (x,99) an und prüft danach erneut die Marge.
         """
         try:
             # 1) Grobe Startschätzung
-            p_guess = (ek + bl_shipping + PriceProcessing.ADDCOST_LOW_MID + Decimal('5.00'))
+            p_guess = (ek + bl_shipping + addcost_low_mid + Decimal('5.00'))
 
             # 2) Iterativ p lösen, da Zielmarge im Mid/High von p abhängt
-            p = PriceProcessing._solve_price(ek, bl_shipping, p_guess)
+            p = PriceProcessing._solve_price(ek, bl_shipping, p_guess, addcost_low_mid, addcost_high)
 
             # 3) Psychologisches Runden auf nächste x,99
             p = PriceProcessing._round_x99_up(p)
 
-            # 4) Re-Check nach Rundung; wenn Zielmarge verfehlt, nächste x,99-Stufe
-            while not PriceProcessing._meets_margin(ek, bl_shipping, p):
+            # SICHERHEITSNETZ: Verhindert Endlos-Schleife bei sehr teuren Büchern mit hohen Fixkosten 
+            ek_total = ek + bl_shipping
+            
+            if ek_total <= Decimal('5.00'):
+                max_allowed_price = min(ek_total * Decimal('6.0'), Decimal('29.99'))
+            elif ek_total <= Decimal('10.00'):
+                max_allowed_price = min(ek_total * Decimal('5.0'), Decimal('39.99'))
+            elif ek_total <= Decimal('15.00'):
+                max_allowed_price = min(ek_total * Decimal('4.5'), Decimal('49.99'))
+            elif ek_total <= Decimal('20.00'):
+                max_allowed_price = min(ek_total * Decimal('4.0'), Decimal('59.99'))
+            else:
+                max_allowed_price = min(ek_total * Decimal('3.0'), Decimal('149.99'))
+            
+            while not PriceProcessing._meets_margin(ek, bl_shipping, p, addcost_low_mid, addcost_high):
                 p = PriceProcessing._round_x99_up(p + Decimal('0.01'))
-
+                if p > max_allowed_price:
+                    logger.warning(f"Preis-Obergrenze ({max_allowed_price}€) während Margen-Check bei EK {ek_total}€ erreicht. Breche Endlos-Schleife ab.")
+                    return max_allowed_price # Return capped price, which will fail calculate_profitability if margin is too low, marking as "Unrentabel"
+                    
             return p.quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
-        except Exception:
-            logger.warning("Berechnung final_price schlug fehl.")
+        except Exception as e:
+            logger.error(f"Berechnung final_price schlug fehl. {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     @staticmethod
-    def _solve_price(ek: Decimal, bl_shipping: Decimal, p_init: Decimal) -> Decimal:
+    def _solve_price(ek: Decimal, bl_shipping: Decimal, p_init: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> Decimal:
         """
         Löst p für die jeweilige Segmentregel. Es gibt drei Fälle:
         - Low (feste Marge M): p >= (M + EK + Versand + AddCosts + fee_fixed) / (1 - fee_rate)
@@ -279,7 +330,7 @@ class PriceProcessing:
 
         p = p_init
         for _ in range(100):  # Konvergenz-Obergrenze
-            add_costs = PriceProcessing._additional_costs_for_price(p)
+            add_costs = PriceProcessing._additional_costs_for_price(p, addcost_low_mid, addcost_high)
             base = ek + bl_shipping + add_costs + fee_fixed
 
             if p < PriceProcessing.PRICE_LOW_MAX:
@@ -310,12 +361,19 @@ class PriceProcessing:
         return p
 
     @staticmethod
-    def _meets_margin(ek: Decimal, bl_shipping: Decimal, p: Decimal) -> bool:
-        fee = PriceProcessing._fee_on_price(p)
-        add_costs = PriceProcessing._additional_costs_for_price(p)
-        margin = p - (ek + bl_shipping + add_costs + fee)
+    def _meets_margin(ek: Decimal, bl_shipping: Decimal, p: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> bool:
+        # Greift nun für die finale Überprüfung exakt auf calculate_profitability zu, 
+        # um eine Drift zwischen Formeln (Fixkosten, Retourepuffer, Add Costs) auszuschließen.
+        from decimal import Decimal
         target = PriceProcessing._target_margin_for_price(p)
-        return margin >= target
+        
+        prof = PriceProcessing.calculate_profitability(
+            ek, bl_shipping, p, 
+            min_margin=target, # Wir übergeben die hier berechnete, dynamische Zielmarge
+            addcost_low_mid=addcost_low_mid,
+            addcost_high=addcost_high
+        )
+        return prof["rentabel"]
 
     @staticmethod
     def _round_x99_up(p: Decimal) -> Decimal:
@@ -445,13 +503,13 @@ class PriceProcessing:
                 recommended = Decimal('0.00')
 
                 if count > 10:
-                    strategy = "viele"
+                    strategy = "Konkurrenz-Druck"
                     recommended = min_price - Decimal('0.01')
                 elif count >= 3:
-                    strategy = "wenige"
+                    strategy = "Markt-Orientierung"
                     recommended = median_bereinigt * Decimal('0.95')
                 else:
-                    strategy = "kaum" if count > 0 else "keine"
+                    strategy = "Seltenheits-Bonus" if count > 0 else "Monopol-Stellung"
                     # EK_effektiv wird in der aufrufenden Funktion verarbeitet
                     recommended = Decimal('0.00') 
 
@@ -480,7 +538,9 @@ class PriceProcessing:
         ebay_p: Decimal,
         monthly_fixed_costs: Decimal = Decimal('79.95'),
         total_listings: int = 2500,
-        min_margin: Decimal = Decimal('2.50')
+        min_margin: Decimal = Decimal('2.50'),
+        addcost_low_mid: Decimal = Decimal('0.50'),
+        addcost_high: Decimal = Decimal('1.75')
     ) -> dict:
         """
         Berechnet die Profitabilität basierend auf den Vorgaben:
@@ -501,9 +561,12 @@ class PriceProcessing:
         if total_listings <= 0: total_listings = 1
         fix_cost_per_item = monthly_fixed_costs / Decimal(str(total_listings))
 
+        # 2b. Add Costs (Verpackung, Etiketten etc.) - Dynamisch nach Preis
+        add_costs = PriceProcessing._additional_costs_for_price(ebay_p, addcost_low_mid, addcost_high)
+
         # 3. Marge berechnen (ohne AdditionalCosts als Teil des Einkaufs)
-        # gewinn_brutto = vk - ebay_gebühr - (ek + versand_bl + fixanteil)
-        gewinn_brutto = ebay_p - (ek + bl_shipping + ebay_fees + fix_cost_per_item)
+        # gewinn_brutto = vk - ebay_gebühr - (ek + versand_bl + fixanteil + additional_costs)
+        gewinn_brutto = ebay_p - (ek + bl_shipping + ebay_fees + fix_cost_per_item + add_costs)
         
         # 4. Retouren-Puffer (v2)
         from decimal import ROUND_HALF_UP
@@ -539,18 +602,22 @@ class PriceProcessing:
         prof_data: dict = None
     ):
         """Speichert alle Kalkulations- und Konkurrenzdaten in der Datenbank."""
+        # Best Offer Logik: 5% Rabatt erlauben
+        from decimal import ROUND_HALF_UP
+        auto_accept_p = (final_price * Decimal('0.95')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
         async with db_pool.acquire() as conn:
             # Standard-Updates
             sql = """
                 UPDATE library
                 SET Start_price                  = $1,
-                    Minimum_Best_Offer_Price     = $1,
-                    Best_Offer_Auto_Accept_Price = $1,
-                    Margin                       = $2,
-                    Purchase_price               = $3,
-                    Purchase_shipping            = $4
+                    Minimum_Best_Offer_Price     = $2,
+                    Best_Offer_Auto_Accept_Price = $2,
+                    Margin                       = $3,
+                    Purchase_price               = $4,
+                    Purchase_shipping            = $5
             """
-            params = [final_price, margin, purchase_price, purchase_shipping]
+            params = [final_price, auto_accept_p, margin, purchase_price, purchase_shipping]
             
             # Konkurrenz-Daten ergänzen
             if comp_data:

@@ -217,7 +217,11 @@ class BLBotApp(tb.Window):
             "EBAY_ENV": tk.StringVar(value="SANDBOX"),
             "FIXKOSTEN_MONATLICH": tk.StringVar(value="79.95"),
             "ANZAHL_LISTINGS": tk.StringVar(value="2500"),
-            "MINDESTMARGE": tk.StringVar(value="2.50")
+            "MINDESTMARGE": tk.StringVar(value="2.50"),
+            "ZUSATZKOSTEN_LOW_MID": tk.StringVar(value="0.50"),
+            "ZUSATZKOSTEN_HIGH": tk.StringVar(value="1.75"),
+            "SHIPPING_DESCRIPTION_EBAY": tk.StringVar(value="Standardversand"),
+            "DELIVERY_TIME_EBAY": tk.StringVar(value="1-3 Werktage")
         }
         
         container = tb.Frame(self.tab_settings, padding=20)

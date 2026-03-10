@@ -190,7 +190,7 @@ class DatabaseManager:
             except Exception as e:
                 logger.error(f"Migration für eBay-Upload/Konkurrenzcheck fehlgeschlagen: {e}")
 
-            # Neue Tabelle für Listings ohne gültige ISBN Neue Tabelle für Listings ohne gültige ISBN
+            # Neue Tabelle für Listings ohne gültige ISBN
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS missing_listings (
                     library_id   INTEGER PRIMARY KEY,
@@ -200,6 +200,19 @@ class DatabaseManager:
                 );
             """)
             logger.info("Tabelle 'missing_listings' existiert nun oder wurde neu angelegt.")
+            
+            # Neue Tabelle für unrentable Angebote
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS unprofitable_listings (
+                    library_id   INTEGER PRIMARY KEY,
+                    link         TEXT NOT NULL,
+                    reason       TEXT,
+                    start_price  NUMERIC,
+                    margin       NUMERIC,
+                    recorded_at  TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            logger.info("Tabelle 'unprofitable_listings' existiert nun oder wurde neu angelegt.")
 
     @staticmethod
     async def insert_library_entry(db_pool, properties: dict):
@@ -210,7 +223,7 @@ class DatabaseManager:
                                              INSERT INTO library
                                              (Autor, Buchtitel, Sprache, Thematik, Verlag, Erscheinungsjahr,
                                               CFormat, Produktart, Ausgabe, Description, bl_condition)
-                                             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, sku
+                                              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id, sku
                                              """,
                                              properties.get("Autor", ""),
                                              properties.get("Buchtitel", ""),
@@ -250,6 +263,30 @@ class DatabaseManager:
             logger.info(f"Missing listing aufgezeichnet und library_id {library_id} gelöscht, Grund={reason}")
         except Exception as e:
             logger.error(f"Fehler beim Aufzeichnen von missing_listing {library_id}: {e}")
+
+    @staticmethod
+    async def record_unprofitable_listing(db_pool, library_id: int, link: str, reason: str, price: float = None, margin: float = None):
+        """
+        Verschiebt ein unrentables Angebot aus library in unprofitable_listings.
+        """
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    WITH deleted AS (
+                        DELETE FROM library WHERE id = $1
+                    )
+                    INSERT INTO unprofitable_listings (library_id, link, reason, start_price, margin)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (library_id) DO UPDATE SET
+                        link = EXCLUDED.link,
+                        reason = EXCLUDED.reason,
+                        start_price = EXCLUDED.start_price,
+                        margin = EXCLUDED.margin,
+                        recorded_at = NOW()
+                """, library_id, link, reason, price, margin)
+            logger.info(f"Unrentables Listing aufgezeichnet und library_id {library_id} gelöscht. Preis={price}€, Marge={margin}€")
+        except Exception as e:
+            logger.error(f"Fehler beim Aufzeichnen von unprofitable_listing {library_id}: {e}")
 
     @staticmethod
     async def set_foreignkey(db_pool):

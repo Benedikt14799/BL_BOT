@@ -49,7 +49,7 @@ class PictureProcessing:
                     async with session.get(dnb_url, timeout=10) as resp:
                         if resp.status == 200:
                             picture_links.append(dnb_url)
-                            logger.info(f"[{num}] DNB-Cover hinzugefügt: {dnb_url}")
+                            logger.debug(f"[{num}] DNB-Cover hinzugefügt: {dnb_url}")
                         else:
                             logger.debug(f"[{num}] Kein DNB-Cover (Status {resp.status})")
             except aiohttp.ClientError as e:
@@ -66,12 +66,15 @@ class PictureProcessing:
         if not preview_images:
             logger.debug(f"[{num}] Keine Booklooker-Vorschaubilder gefunden.")
             
-        for idx, img in enumerate(preview_images, start=1):
+        seen_srcs = set()
+        img_counter = 1
+        
+        for img in preview_images:
             src = img.get("src")
-            if not src:
-                logger.warning(f"[{num}] Bild {idx} ohne src-Attribut übersprungen.")
+            if not src or src in seen_srcs:
                 continue
-            
+                
+            seen_srcs.add(src)
             
             # "/t/" (Thumbnails bei mehreren Bildern) oder "/bilder/" (Thumbnails bei Einzelbildern)
             # werden potenziell durch "/x/" (maximale Auflösung) ersetzt
@@ -83,10 +86,13 @@ class PictureProcessing:
             else:
                 final_src = src
             
-            picture_links.append(final_src)
-            logger.info(f"[{num}] Bild {idx} hinzugefügt: {final_src}")
+            # Nur hinzufügen, wenn es noch nicht als highres/final aufgelöst existiert
+            if final_src not in picture_links:
+                picture_links.append(final_src)
+                logger.debug(f"[{num}] Bild {img_counter} hinzugefügt: {final_src}")
+                img_counter += 1
 
-        # 3) String bauen und in DB speichern (Dedupliziert!)
+        # 3) String bauen und in DB speichern (Zusätzliche Sicherheit)
         picture_links = list(dict.fromkeys(picture_links))
         result = "|".join(picture_links)
         try:
@@ -95,7 +101,7 @@ class PictureProcessing:
                     "UPDATE library SET photo = $1 WHERE id = $2",
                     result, num
                 )
-            logger.info(f"[{num}] {len(picture_links)} Bilder in DB gespeichert.")
+            logger.debug(f"[{num}] {len(picture_links)} Bilder in DB gespeichert.")
         except Exception as e:
             logger.error(f"[{num}] Fehler beim Speichern der Bilder: {e}")
 

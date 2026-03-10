@@ -59,6 +59,19 @@ class PropertyToDatabase:
         "seiten", "neu", "aktuell", "jetzt", "bestellen"
     }
 
+    # Liste von Marketing-Begriffen und Platzhaltern, die aus dem Titel gefiltert werden sollen
+    MARKETING_KEYWORDS = [
+        r"top", r"zustand", r"neu", r"ovp", r"ungelesen", r"sammlerstück",
+        r"wie neu", r"neuwertig", r"mängelfrei", r"tip-top", r"tiptop", r"gepflegt",
+        r"ungelesenes exemplar", r"topzustand", r"rar", r"rarität", r"selten", 
+        r"sammler", r"super", r"klasse", r"hammer", r"tolles buch", r"lesenswert",
+        r"aktion", r"jetzt", r"kaufen", r"bestellen", r"schnell", r"günstig", 
+        r"billig", r"preishit", r"portodrei", r"versandkostenfrei", r"rabatt", 
+        r"geschenk", r"raucherfrei", r"tierfrei", r"sauber", r"händler", 
+        r"fachhändler", r"rechnung", r"mwst", r"blitzversand", r"versand heute", 
+        r"sofort"
+    ]
+
     @staticmethod
     def _normalize_key(s: str) -> str:
         s = (s or "").replace("\xa0", " ").strip()
@@ -67,8 +80,31 @@ class PropertyToDatabase:
         return s
 
     @staticmethod
+    def _clean_marketing_speech(text: str) -> str:
+        if not text:
+            return ""
+        
+        # 1. Bekannte Marketing-Keywords entfernen (Case-Insensitive)
+        # Wir nutzen \b für Wortgrenzen, damit "Seltenheit" nicht "Selt" entfernt
+        for kw in PropertyToDatabase.MARKETING_KEYWORDS:
+            pattern = re.compile(rf"\b{kw}\b", re.IGNORECASE)
+            text = pattern.sub("", text)
+
+        # 2. Sonderzeichen-Ketten und redundante Trenner entfernen
+        text = re.sub(r"[!*+=><?]{2,}", " ", text)  # !!!, ***, +++ etc.
+        text = re.sub(r"\s+-\s+", " - ", text)      # Vereinheitlicht Bindestriche
+        
+        # 3. Mehrfache Leerzeichen und Ränder säubern
+        text = re.sub(r"\s+", " ", text).strip()
+        
+        # 4. Überflüssige Trenner am Ende entfernen
+        text = text.rstrip("!*+-=><?,. ")
+        
+        return text
+
+    @staticmethod
     def build_ebay_title(props_norm: dict, max_len: int = 80) -> str:
-        titel = str(props_norm.get("titel", "")).strip()
+        titel = PropertyToDatabase._clean_marketing_speech(str(props_norm.get("titel", "")))
         autor = str(props_norm.get("autor/in", "")).strip()
         produktart = str(props_norm.get("produktart", props_norm.get("einband", ""))).strip()
 

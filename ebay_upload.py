@@ -3,6 +3,9 @@ import os
 import logging
 import asyncio
 import aiohttp
+from decimal import Decimal
+from datetime import datetime, timedelta
+from ebay_template import generate_description, get_condition_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +37,11 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
         if specific_ids:
             query = """
                 SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
-                       description, photo, start_price, condition_id,
-                       sprache, ebay_error,
+                       description, photo, start_price, condition_id, bl_condition,
+                       best_offer_auto_accept_price, minimum_best_offer_price,
+                       sprache, seitenanzahl, thematik, buchreihe, genre, cformat,
+                       originalsprache, produktart, literarische_gattung, zielgruppe,
+                       signiert_von, literarische_bewegung, ausgabe, ebay_error,
                        COALESCE(ebay_status, 'pending') as ebay_status
                 FROM library 
                 WHERE id = ANY($1::int[])
@@ -48,8 +54,11 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
             # - Include those with errors so they can be retried from GUI
             query = """
                 SELECT id, isbn, sku, title, autor, verlag as publisher, erscheinungsjahr, 
-                       description, photo, start_price, condition_id,
-                       sprache, ebay_error,
+                       description, photo, start_price, condition_id, bl_condition,
+                       best_offer_auto_accept_price, minimum_best_offer_price,
+                       sprache, seitenanzahl, thematik, buchreihe, genre, cformat,
+                       originalsprache, produktart, literarische_gattung, zielgruppe,
+                       signiert_von, literarische_bewegung, ausgabe, ebay_error,
                        COALESCE(ebay_status, 'pending') as ebay_status
                 FROM library 
                 WHERE (ebay_listed IS FALSE OR ebay_listed IS NULL)
@@ -94,16 +103,63 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
         aspects['Seitenanzahl'] = [str(book_data['seitenanzahl']).replace('S.', '').strip()[:65]]
     if book_data.get('title'):
         aspects['Buchtitel'] = [str(book_data['title'])[:65]]
+    if book_data.get('thematik'):
+        aspects['Thematik'] = [str(book_data['thematik'])[:65]]
+    if book_data.get('buchreihe'):
+        aspects['Buchreihe'] = [str(book_data['buchreihe'])[:65]]
+    if book_data.get('genre'):
+        aspects['Genre'] = [str(book_data['genre'])[:65]]
+    if book_data.get('cformat'):
+        aspects['Format'] = [str(book_data['cformat'])[:65]]
+    if book_data.get('originalsprache'):
+        aspects['Originalsprache'] = [str(book_data['originalsprache'])[:65]]
+    if book_data.get('produktart'):
+        aspects['Produktart'] = [str(book_data['produktart'])[:65]]
+    if book_data.get('literarische_gattung'):
+        aspects['Literarische Gattung'] = [str(book_data['literarische_gattung'])[:65]]
+    if book_data.get('zielgruppe'):
+        aspects['Zielgruppe'] = [str(book_data['zielgruppe'])[:65]]
+    if book_data.get('signiert_von'):
+        aspects['Signiert von'] = [str(book_data['signiert_von'])[:65]]
+    if book_data.get('literarische_bewegung'):
+        aspects['Literarische Bewegung'] = [str(book_data['literarische_bewegung'])[:65]]
+    if book_data.get('ausgabe'):
+        aspects['Ausgabe'] = [str(book_data['ausgabe'])[:65]]
+
+    # 1. Condition-Metadaten für Template bestimmen
+    cond_meta = get_condition_metadata(book_data.get('bl_condition'))
+    
+    # 2. HTML-Beschreibung mit Template generieren
+    template_data = {
+        'title': book_data.get('title', 'Unbekannter Titel'),
+        'author': book_data.get('autor', 'Unbekannt'),
+        'publisher': book_data.get('publisher', 'Unbekannter Verlag'),
+        'language': book_data.get('sprache', 'Deutsch'),
+        'condition': cond_meta['text'],
+        'condition_color': cond_meta['color'],
+        'extra_notes': book_data.get('description', ''),
+        'shipping_cost': os.environ.get("SHIPPING_DESCRIPTION_EBAY", "Standardversand"),
+        'delivery_time': os.environ.get("DELIVERY_TIME_EBAY", "1-3 Werktage")
+    }
+    html_description = generate_description(template_data)
+
+    # Condition Description für eBay (prominent oben beim Preis)
+    bl_cond = book_data.get('bl_condition', '')
+    internal_notes = book_data.get('description', '')
+    condition_desc = f"Zustand: {bl_cond}. {internal_notes}".strip()
+    if len(condition_desc) > 1000:
+        condition_desc = condition_desc[:997] + "..."
 
     payload = {
         "product": {
             "title": str(book_data.get("title", ""))[:80],  # eBay max title length is 80
-            "description": book_data.get("description", "Keine Beschreibung verfügbar."),
+            "description": html_description,
             "imageUrls": str(book_data['photo']).split('|') if book_data.get('photo') else [],
             "aspects": aspects,
             "isbn": [book_data['isbn']]
         },
         "condition": condition,
+        "conditionDescription": condition_desc,
         "availability": {
             "shipToLocationAvailability": {
                 "quantity": 1
@@ -137,16 +193,32 @@ async def create_offer(session: aiohttp.ClientSession, book_data: dict, token: s
     if not price:
         raise Exception("Kein Preis vorhanden.")
 
+    # Streichpreis-Logik (STP)
+    # Nur für Normalpreis-Artikel (10€ - 50€)
+    pricing_summary = {
+        "price": {
+            "value": str(price),
+            "currency": "EUR"
+        }
+    }
+    
+    price_dec = Decimal(str(price))
+    if Decimal('10.00') <= price_dec <= Decimal('50.00'):
+        original_p = (price_dec * Decimal('1.25')).quantize(Decimal('0.01'))
+        pricing_summary["originalRetailPrice"] = {
+            "value": str(original_p),
+            "currency": "EUR"
+        }
+        pricing_summary["pricingVisibility"] = "STP"
+
     payload = {
         "sku": book_data['isbn'],
         "marketplaceId": "EBAY_DE",
         "format": "FIXED_PRICE",
         "merchantLocationKey": "DEFAULT",
-        "pricingSummary": {
-            "price": {
-                "value": str(price),
-                "currency": "EUR"
-            }
+        "pricingSummary": pricing_summary,
+        "tax": {
+            "vatPercentage": 7.0
         },
         "categoryId": "268",  # Standard-Buch Kategorie EBAY_DE
         "listingPolicies": {
@@ -155,6 +227,23 @@ async def create_offer(session: aiohttp.ClientSession, book_data: dict, token: s
             "returnPolicyId": policies['EBAY_RETURN_POLICY_ID']
         }
     }
+
+    # Best Offer Logik (5% Rabatt-Stufen) hinzufügen, falls vorhanden
+    auto_accept = book_data.get('best_offer_auto_accept_price')
+    min_offer = book_data.get('minimum_best_offer_price')
+    
+    if auto_accept and min_offer:
+        payload["bestOfferTerms"] = {
+            "bestOfferEnabled": True,
+            "autoAcceptPrice": {
+                "value": str(auto_accept),
+                "currency": "EUR"
+            },
+            "autoDeclinePrice": {
+                "value": str(min_offer),
+                "currency": "EUR"
+            }
+        }
 
     async with session.post(url, headers=headers, json=payload) as resp:
         if resp.status in (200, 201):
@@ -261,6 +350,66 @@ async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, 
         await mark_as_error(db_pool, internal_id, error_str)
 
 
+async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token: str, base_url: str):
+    """
+    Erstellt eine globale Marketing-Promotion für 5% Mengenrabatt ab 2 Artikeln in der Buch-Kategorie (268).
+    Nutzt die eBay Marketing API.
+    """
+    url = f"{base_url}/sell/marketing/v1/item_promotion"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    # Wir prüfen nicht erst, ob sie existiert, sondern versuchen sie zu erstellen.
+    # Falls sie existiert, gibt eBay meist einen 409 Conflict oder 400 mit Detail-Fehler zurück.
+    
+    start_date = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    end_date = (datetime.utcnow() + timedelta(days=365*2)).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+
+    payload = {
+        "name": "Mengenrabatt 5% ab 2 Büchern",
+        "description": "Spare 5% beim Kauf von 2 oder mehr Artikeln aus der Kategorie Bücher.",
+        "marketplaceId": "EBAY_DE",
+        "startDate": start_date,
+        "endDate": end_date,
+        "promotionStatus": "ENABLED",
+        "discountRules": [
+            {
+                "discountBenefit": {
+                    "percentage": "5"
+                },
+                "numberOfItems": 2
+            }
+        ],
+        "inventoryCriterion": {
+            "inventoryCriterionType": "INVENTORY_BY_RULE",
+            "ruleCriteria": {
+                "selectionRules": [
+                    {
+                        "categoryIds": ["268"],
+                        "categoryScope": "MARKETPLACE"
+                    }
+                ]
+            }
+        }
+    }
+
+    try:
+        async with session.post(url, headers=headers, json=payload) as resp:
+            if resp.status in (200, 201):
+                logger.info("Mengenrabatt-Promotion erfolgreich erstellt.")
+            elif resp.status == 409:
+                logger.info("Mengenrabatt-Promotion existiert bereits (409 Conflict).")
+            else:
+                resp_text = await resp.text()
+                # Wir loggen es nur als Info, da der Upload nicht abbrechen soll, falls Marketing API zickt
+                logger.info(f"Marketing API Hinweis ({resp.status}): {resp_text}")
+    except Exception as e:
+        logger.warning(f"Fehler beim Erstellen der Mengenrabatt-Promotion: {e}")
+
+
 async def run_upload_batch(db_pool, specific_ids: list = None):
     EBAY_USER_TOKEN = os.environ.get("EBAY_USER_TOKEN")
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
@@ -288,6 +437,9 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
             return
 
         logger.info("Starting eBay Upload Batch...")
+        
+        # 0. Sicherstellen, dass die globale Mengenrabatt-Promotion aktiv ist (5% ab 2 Artikeln)
+        await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
         
         books_to_upload = await get_unlisted_books(db_pool, limit=5, specific_ids=specific_ids) # Sandbox testing batch slice
         
