@@ -11,6 +11,24 @@ logger = logging.getLogger(__name__)
 
 upload_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent uploads to respect rate limits
 
+def map_ebay_condition(bl_condition: str) -> str:
+    """
+    Maps Booklooker condition strings to eBay Inventory API condition enums.
+    Values: NEW, LIKE_NEW, VERY_GOOD, GOOD, ACCEPTABLE
+    """
+    if not bl_condition:
+        return "GOOD"
+    c = bl_condition.lower()
+    if any(x in c for x in ["wie neu", "neu"]):
+        return "LIKE_NEW"
+    if "sehr gut" in c:
+        return "VERY_GOOD"
+    if any(x in c for x in ["leichte gebrauchsspuren", "gut"]):
+        return "GOOD"
+    if any(x in c for x in ["deutliche gebrauchsspuren", "akzeptabel", "stark"]):
+        return "ACCEPTABLE"
+    return "GOOD"
+
 async def validate_token(session: aiohttp.ClientSession, token: str, base_url: str) -> bool:
     """
     Checks if the token is still valid by making a simple metadata call.
@@ -86,9 +104,7 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     }
 
     # Map Condition
-    # Booklooker mapping to eBay condition (Sandbox requires predefined ENUMS)
-    # Default to USED_GOOD if parse fails
-    condition = "LIKE_NEW"
+    condition = map_ebay_condition(book_data.get('bl_condition'))
     
     aspects = {}
     if book_data.get('sprache'):
@@ -415,7 +431,13 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
     EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID")
     EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID")
+    # Default safely to sandbox, but warn if we expect production
     EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.sandbox.ebay.com")
+    
+    if "sandbox" not in EBAY_BASE_URL.lower():
+        logger.info("PRODUCTION MODE: Uploading to real eBay Marketplace.")
+    else:
+        logger.info("SANDBOX MODE: Uploading to eBay Sandbox.")
 
     if not EBAY_USER_TOKEN:
         logger.error("EBAY_USER_TOKEN is missing. Aborting eBay upload.")
@@ -441,7 +463,7 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         # 0. Sicherstellen, dass die globale Mengenrabatt-Promotion aktiv ist (5% ab 2 Artikeln)
         await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
         
-        books_to_upload = await get_unlisted_books(db_pool, limit=5, specific_ids=specific_ids) # Sandbox testing batch slice
+        books_to_upload = await get_unlisted_books(db_pool, limit=50, specific_ids=specific_ids)
         
         if not books_to_upload:
             logger.info("No unlisted books found with valid ISBN.")
