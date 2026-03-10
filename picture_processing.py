@@ -13,22 +13,6 @@ import asyncio
 dnb_semaphore = asyncio.Semaphore(5)
 
 class PictureProcessing:
-    """
-    Verwaltet die Extraktion und Speicherung von Bildern:
-    - Holt optional DNB-Cover per ISBN
-    - Extrahiert bis zu 24 Vorschaubilder von Booklooker
-    - Verschiebt Datensätze ohne Bilder in missing_listings
-    """
-
-    @staticmethod
-    async def check_image_exists(session: aiohttp.ClientSession, url: str) -> bool:
-        try:
-            async with session.head(url, timeout=5) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
-
-    @staticmethod
     async def get_pictures_with_dnb(
         session: aiohttp.ClientSession,
         soup: BeautifulSoup,
@@ -55,42 +39,22 @@ class PictureProcessing:
             except aiohttp.ClientError as e:
                 logger.warning(f"[{num}] DNB-Cover-Anfrage fehlgeschlagen: {e}")
 
-        # 2) Booklooker-Vorschaubilder extrahieren (bis max. 24)
-        preview_images = soup.find_all(class_="previewImage")[:24]
-        
-        # Fallback: Wenn es keine "previewImage" gibt, gibt es oft ein einzelnes "articleImage"
-        if not preview_images:
-            logger.debug(f"[{num}] Keine previewImage gefunden. Suche nach articleImage...")
-            preview_images = soup.find_all(class_="articleImage")[:1]
-            
-        if not preview_images:
-            logger.debug(f"[{num}] Keine Booklooker-Vorschaubilder gefunden.")
-            
-        seen_srcs = set()
-        img_counter = 1
-        
-        for img in preview_images:
-            src = img.get("src")
-            if not src or src in seen_srcs:
-                continue
-                
-            seen_srcs.add(src)
-            
-            # "/t/" (Thumbnails bei mehreren Bildern) oder "/bilder/" (Thumbnails bei Einzelbildern)
-            # werden potenziell durch "/x/" (maximale Auflösung) ersetzt
-            highres_candidate = src.replace("/t/", "/x/").replace("/bilder/", "/x/")
-            
-            # Überprüfen, ob das High-Res Bild existiert
-            if await PictureProcessing.check_image_exists(session, highres_candidate):
-                final_src = highres_candidate
-            else:
-                final_src = src
-            
-            # Nur hinzufügen, wenn es noch nicht als highres/final aufgelöst existiert
-            if final_src not in picture_links:
-                picture_links.append(final_src)
-                logger.debug(f"[{num}] Bild {img_counter} hinzugefügt: {final_src}")
-                img_counter += 1
+        # 2) Booklooker-Vorschaubilder extrahieren (XXL via href)
+        preview_links = soup.find_all("a", class_="previewTop")[:24]
+        if preview_links:
+            for idx, a in enumerate(preview_links, start=1):
+                href = a.get("href", "").strip()
+                if href.startswith("https://"):
+                    picture_links.append(href)
+                    logger.info(f"[{num}] Bild {idx} (XXL via href): {href}")
+        else:
+            # Fallback: einzelnes Hauptbild aus id="currentImage"
+            main_img = soup.find("img", id="currentImage")
+            if main_img:
+                src = main_img.get("src", "").strip()
+                if src.startswith("https://"):
+                    picture_links.append(src)
+                    logger.info(f"[{num}] Fallback currentImage: {src}")
 
         # 3) String bauen und in DB speichern (Zusätzliche Sicherheit)
         picture_links = list(dict.fromkeys(picture_links))
@@ -105,7 +69,7 @@ class PictureProcessing:
         except Exception as e:
             logger.error(f"[{num}] Fehler beim Speichern der Bilder: {e}")
 
-        # 4) NEU: Keine Bilder → missing_listings verschieben und löschen
+        # 4) NEU: Keine Bilder → missing_listings verschieben und laden
         if len(picture_links) == 0:
             try:
                 # Link zur Dokumentation des Missing-Eintrags holen

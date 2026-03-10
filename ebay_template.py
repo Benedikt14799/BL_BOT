@@ -48,81 +48,41 @@ def generate_description(data: dict) -> str:
     sc = data.get('shipping_cost', 'Kostenloser Versand')
     dt = data.get('delivery_time', '1-3 Werktage')
 
-    # Styling-Konstanten für Wiederverwendbarkeit (Inline-Fallback)
-    font_family = "font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;"
-    main_blue = "#0053a0"
-    header_gradient = "background: linear-gradient(135deg, #0053a0 0%, #0073e6 100%);"
+    # Styling-Konstanten (kompakter)
+    font = "font-family:'Segoe UI',Roboto,Arial,sans-serif;"
+    blue = "#0053a0"
+    grad = "background:linear-gradient(135deg,#0053a0 0%,#0073e6 100%);"
     
-    html = f"""
-<div class="ebay-container" style="{font_family} max-width: 900px; margin: 20px auto; border: 1px solid #e0e0e0; border-radius: 8px; overflow: hidden; background-color: #ffffff; color: #333; line-height: 1.6;">
-    
-    <!-- HEADER MIT GRADIENT -->
-    <header style="{header_gradient} color: #ffffff; padding: 30px 20px; text-align: center;">
-        <h1 style="margin: 0; font-size: 24px; font-weight: 600; text-shadow: 1px 1px 2px rgba(0,0,0,0.2);">{t}</h1>
-        <p style="margin: 10px 0 0 0; font-size: 16px; opacity: 0.9;">von {a}</p>
-    </header>
-
-    <div style="padding: 25px;">
-        
-        <!-- SEKTION: BUCHDETAILS -->
-        <div style="margin-bottom: 30px;">
-            <h2 style="color: {main_blue}; font-size: 18px; border-bottom: 2px solid #f0f0f0; padding-bottom: 8px; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">Buchdetails</h2>
-            <table style="width: 100%; border-collapse: collapse; font-size: 15px;">
-                <tr>
-                    <td style="padding: 8px 0; font-weight: bold; width: 30%; color: #666;">Verlag:</td>
-                    <td style="padding: 8px 0;">{p}</td>
-                </tr>
-                <tr>
-                    <td style="padding: 8px 0; font-weight: bold; color: #666;">Sprache:</td>
-                    <td style="padding: 8px 0;">{l}</td>
-                </tr>
-            </table>
-        </div>
-
-        <!-- SEKTION: ZUSTAND MIT BADGE -->
-        <div style="margin-bottom: 30px;">
-            <h2 style="color: {main_blue}; font-size: 18px; border-bottom: 2px solid #f0f0f0; padding-bottom: 8px; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">Zustand</h2>
-            <div style="margin-bottom: 10px;">
-                <span class="badge" style="background-color: {cc}; color: white; padding: 5px 12px; border-radius: 20px; font-size: 14px; font-weight: bold; display: inline-block;">
-                    {c}
-                </span>
-            </div>
-            {f'<p style="margin: 10px 0; font-style: italic; color: #555;">{n}</p>' if n else ''}
-        </div>
-
-        <!-- SEKTION: VERSAND & SERVICE -->
-        <div style="background-color: #f9f9f9; padding: 20px; border-radius: 6px; border-left: 4px solid {main_blue};">
-            <h2 style="color: {main_blue}; font-size: 18px; margin-top: 0; margin-bottom: 15px; text-transform: uppercase; letter-spacing: 1px;">Versand & Service</h2>
-            <ul style="margin: 0; padding-left: 20px; list-style-type: square; color: #444;">
-                <li style="margin-bottom: 8px;"><strong>Versand:</strong> {sc}</li>
-                <li style="margin-bottom: 8px;"><strong>Lieferzeit:</strong> {dt}</li>
-                <li style="margin-bottom: 0;"><strong>Rückgabe:</strong> 30 Tage Rückgaberecht</li>
-            </ul>
-        </div>
-
-    </div>
-
-    <!-- FOOTER -->
-    <footer style="background-color: #f1f1f1; padding: 15px; text-align: center; font-size: 12px; color: #888; border-top: 1px solid #e0e0e0;">
-        Vielen Dank für Ihren Einkauf! Bei Fragen stehen wir Ihnen jederzeit gerne zur Verfügung.
-    </footer>
+    # Kompaktes HTML (ohne unnötige Leerzeichen/Kommentare)
+    html = f"""<div style="{font}max-width:800px;margin:10px auto;border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fff;color:#333;line-height:1.5;">
+<header style="{grad}color:#fff;padding:20px 15px;text-align:center;">
+<h1 style="margin:0;font-size:20px;font-weight:600;">{t}</h1>
+<p style="margin:5px 0 0;font-size:14px;opacity:0.9;">von {a}</p>
+</header>
+<div style="padding:20px;">
+<div style="margin-bottom:20px;">
+<h2 style="color:{blue};font-size:16px;border-bottom:2px solid #eee;padding-bottom:5px;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;">Details</h2>
+<table style="width:100%;border-collapse:collapse;font-size:14px;">
+<tr><td style="padding:5px 0;font-weight:bold;width:30%;color:#666;">Verlag:</td><td style="padding:5px 0;">{p}</td></tr>
+<tr><td style="padding:5px 0;font-weight:bold;color:#666;">Sprache:</td><td style="padding:5px 0;">{l}</td></tr>
+</table>
 </div>
-
-<style>
-    /* Responsive Optimierungen */
-    @media (max-width: 600px) {{
-        .ebay-container {{
-            margin: 0 !important;
-            border-radius: 0 !important;
-            border: none !important;
-        }}
-        header {{
-            padding: 20px 15px !important;
-        }}
-        h1 {{
-            font-size: 20px !important;
-        }}
-    }}
-</style>
-"""
+<div style="margin-bottom:20px;">
+<h2 style="color:{blue};font-size:16px;border-bottom:2px solid #eee;padding-bottom:5px;margin-bottom:10px;text-transform:uppercase;letter-spacing:1px;">Zustand</h2>
+<div style="margin-bottom:8px;"><span style="background:{cc};color:#fff;padding:4px 10px;border-radius:15px;font-size:13px;font-weight:bold;display:inline-block;">{c}</span></div>
+{f'<p style="margin:5px 0;font-style:italic;color:#555;font-size:14px;">{n}</p>' if n else ''}
+</div>
+<div style="background:#f9f9f9;padding:15px;border-radius:6px;border-left:4px solid {blue};font-size:14px;">
+<h2 style="color:{blue};font-size:16px;margin:0 0 10px;text-transform:uppercase;letter-spacing:1px;">Versand & Service</h2>
+<ul style="margin:0;padding-left:18px;color:#444;">
+<li style="margin-bottom:5px;"><strong>Versand:</strong> {sc}</li>
+<li style="margin-bottom:5px;"><strong>Lieferzeit:</strong> {dt}</li>
+<li><strong>Rückgabe:</strong> 30 Tage Rückgaberecht</li>
+</ul>
+</div>
+</div>
+<footer style="background:#eee;padding:12px;text-align:center;font-size:11px;color:#777;border-top:1px solid #ddd;">
+Vielen Dank für Ihren Einkauf! Bei Fragen stehen wir Ihnen jederzeit gerne zur Verfügung.
+</footer>
+</div>"""
     return html.strip()

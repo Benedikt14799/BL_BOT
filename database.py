@@ -97,6 +97,7 @@ class DatabaseManager:
                     Genre TEXT,
                     Verlag TEXT,
                     Erscheinungsjahr VARCHAR(255),
+                    Seitenanzahl VARCHAR(255),
                     CFormat VARCHAR(255),
                     Originalsprache VARCHAR(255),
                     Herstellungsland_und_region VARCHAR(255),
@@ -184,7 +185,21 @@ class DatabaseManager:
                     ADD COLUMN IF NOT EXISTS outlier_removed_count INTEGER DEFAULT 0,
                     ADD COLUMN IF NOT EXISTS gewinn_real NUMERIC,
                     ADD COLUMN IF NOT EXISTS days_not_profitable INTEGER DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS next_recheck_date DATE;
+                    ADD COLUMN IF NOT EXISTS next_recheck_date DATE,
+                    -- Metadata Migration
+                    ADD COLUMN IF NOT EXISTS seitenanzahl VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS thematik TEXT,
+                    ADD COLUMN IF NOT EXISTS buchreihe TEXT,
+                    ADD COLUMN IF NOT EXISTS genre TEXT,
+                    ADD COLUMN IF NOT EXISTS cformat VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS originalsprache VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS herstellungsland_und_region VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS produktart TEXT,
+                    ADD COLUMN IF NOT EXISTS literarische_gattung TEXT,
+                    ADD COLUMN IF NOT EXISTS zielgruppe TEXT,
+                    ADD COLUMN IF NOT EXISTS signiert_von VARCHAR(255),
+                    ADD COLUMN IF NOT EXISTS literarische_bewegung TEXT,
+                    ADD COLUMN IF NOT EXISTS ausgabe TEXT;
                 """)
                 logger.info("Migration: Struktur von library für eBay-Upload und Konkurrenzcheck v2 aktualisiert.")
             except Exception as e:

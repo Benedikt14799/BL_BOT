@@ -18,6 +18,7 @@ import ebay_upload
 import scrape
 import price_monitor
 import price_processing
+import ebay_analytics
 
 # --- Redirect logging to GUI ---
 class TextHandler(logging.Handler):
@@ -146,6 +147,60 @@ class BLBotApp(tb.Window):
         self.btn_auto_sync = tb.Button(controls, text="Auto-Sync: AUS", bootstyle=(SECONDARY, OUTLINE), command=self.toggle_auto_sync)
         self.btn_auto_sync.pack(side=LEFT, padx=10)
 
+        # Rate Limit Section
+        rl_frame = tb.Labelframe(self.tab_dashboard, text="eBay API Rate Limit", padding=15)
+        rl_frame.pack(fill=X, padx=20, pady=10)
+
+        rl_controls = tb.Frame(rl_frame)
+        rl_controls.pack(fill=X)
+
+        self.btn_rate_limit = tb.Button(rl_controls, text="🔄 Rate Limit abrufen", bootstyle=SECONDARY, command=self.refresh_rate_limit)
+        self.btn_rate_limit.pack(side=LEFT, padx=5)
+
+        self.lbl_rl_status = tb.Label(rl_controls, text="Status: Bereit", font=("Helvetica", 9, "italic"))
+        self.lbl_rl_status.pack(side=LEFT, padx=20)
+
+        rl_data = tb.Frame(rl_frame)
+        rl_data.pack(fill=X, pady=(10, 0))
+
+        # Grid for values - Uploads (Sell API)
+        tb.Label(rl_data, text="Uploads (Sell API):", font=("Helvetica", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky=W, padx=5, pady=(0,5))
+        
+        tb.Label(rl_data, text="Limit gesamt:", font=("Helvetica", 10)).grid(row=1, column=0, sticky=W, padx=5)
+        self.lbl_sell_limit_total = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_sell_limit_total.grid(row=1, column=1, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Verbraucht:", font=("Helvetica", 10)).grid(row=1, column=2, sticky=W, padx=20)
+        self.lbl_sell_limit_used = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_sell_limit_used.grid(row=1, column=3, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Verbleibend:", font=("Helvetica", 10)).grid(row=2, column=0, sticky=W, padx=5)
+        self.lbl_sell_limit_remaining = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_sell_limit_remaining.grid(row=2, column=1, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Reset um:", font=("Helvetica", 10)).grid(row=2, column=2, sticky=W, padx=20)
+        self.lbl_sell_limit_reset = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_sell_limit_reset.grid(row=2, column=3, sticky=W, padx=10)
+
+        # Grid for values - Konkurrenzcheck (Buy API)
+        tb.Label(rl_data, text="Konkurrenzcheck (Buy API):", font=("Helvetica", 10, "bold")).grid(row=3, column=0, columnspan=2, sticky=W, padx=5, pady=(15,5))
+        
+        tb.Label(rl_data, text="Limit gesamt:", font=("Helvetica", 10)).grid(row=4, column=0, sticky=W, padx=5)
+        self.lbl_buy_limit_total = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_buy_limit_total.grid(row=4, column=1, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Verbraucht:", font=("Helvetica", 10)).grid(row=4, column=2, sticky=W, padx=20)
+        self.lbl_buy_limit_used = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_buy_limit_used.grid(row=4, column=3, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Verbleibend:", font=("Helvetica", 10)).grid(row=5, column=0, sticky=W, padx=5)
+        self.lbl_buy_limit_remaining = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_buy_limit_remaining.grid(row=5, column=1, sticky=W, padx=10)
+
+        tb.Label(rl_data, text="Reset um:", font=("Helvetica", 10)).grid(row=5, column=2, sticky=W, padx=20)
+        self.lbl_buy_limit_reset = tb.Label(rl_data, text="---", font=("Helvetica", 10, "bold"))
+        self.lbl_buy_limit_reset.grid(row=5, column=3, sticky=W, padx=10)
+
         # Log Window
         lbl = tb.Label(self.tab_dashboard, text="Live Logs:", font=("Helvetica", 12, "bold"))
         lbl.pack(anchor=W, padx=20)
@@ -255,6 +310,51 @@ class BLBotApp(tb.Window):
         self.settings_vars["ANZAHL_LISTINGS"].trace_add("write", lambda *a: self._update_fixkosten_hint())
 
     # --- Actions ---
+    def refresh_rate_limit(self):
+        self.btn_rate_limit.configure(state='disabled', text="⌛ Lade...")
+        self.lbl_rl_status.configure(text="Status: Frage API ab...")
+        asyncio.run_coroutine_threadsafe(self._refresh_rate_limit_task(), self.loop)
+
+    async def _refresh_rate_limit_task(self):
+        try:
+            async with aiohttp.ClientSession() as session:
+                data = await ebay_analytics.get_rate_limit_status(session)
+                sell_d = data.get("sell", {})
+                buy_d = data.get("buy", {})
+                
+                def update_ui():
+                    # Update Sell
+                    self.lbl_sell_limit_total.configure(text=f"{sell_d.get('limit', 0):,}".replace(",", "."))
+                    self.lbl_sell_limit_used.configure(text=f"{sell_d.get('used', 0):,}".replace(",", "."))
+                    s_rem = sell_d.get('remaining', 0)
+                    self.lbl_sell_limit_remaining.configure(text=f"{s_rem:,}".replace(",", "."))
+                    if s_rem < 500: self.lbl_sell_limit_remaining.configure(foreground='red')
+                    elif s_rem < 1000: self.lbl_sell_limit_remaining.configure(foreground='orange')
+                    else: self.lbl_sell_limit_remaining.configure(foreground='#28a745')
+                    self.lbl_sell_limit_reset.configure(text=sell_d.get('reset', 'Unbekannt'))
+                    
+                    # Update Buy
+                    self.lbl_buy_limit_total.configure(text=f"{buy_d.get('limit', 0):,}".replace(",", "."))
+                    self.lbl_buy_limit_used.configure(text=f"{buy_d.get('used', 0):,}".replace(",", "."))
+                    b_rem = buy_d.get('remaining', 0)
+                    self.lbl_buy_limit_remaining.configure(text=f"{b_rem:,}".replace(",", "."))
+                    if b_rem < 500: self.lbl_buy_limit_remaining.configure(foreground='red')
+                    elif b_rem < 1000: self.lbl_buy_limit_remaining.configure(foreground='orange')
+                    else: self.lbl_buy_limit_remaining.configure(foreground='#28a745')
+                    self.lbl_buy_limit_reset.configure(text=buy_d.get('reset', 'Unbekannt'))
+
+                    self.lbl_rl_status.configure(text=f"Status: Aktualisiert um {time.strftime('%H:%M:%S')}")
+                    self.btn_rate_limit.configure(state='normal', text="🔄 Rate Limit abrufen")
+
+                self.after(0, update_ui)
+        except Exception as e:
+            logging.error(f"Rate Limit Fehler: {e}")
+            def show_err():
+                self.lbl_rl_status.configure(text="Status: Fehler!")
+                self.btn_rate_limit.configure(state='normal', text="🔄 Rate Limit abrufen")
+                messagebox.showerror("Fehler", f"Konnte Rate Limit nicht abrufen:\n{e}")
+            self.after(0, show_err)
+
     def test_connection(self):
         asyncio.run_coroutine_threadsafe(self._test_connection_task(), self.loop)
 

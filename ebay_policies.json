@@ -1,0 +1,423 @@
+{
+    "fulfillment": [
+        {
+            "name": "Standartversand B\u00fccher Deutschland",
+            "description": "Standartversand B\u00fccher Deutschland. 2,50\u20ac f\u00fcr jedes Buch. Versand \u00fcber B\u00fccher/Warensendung.\nStandartversand B\u00fccher \u00d6sterreich 7\u20ac\nStandartversand B\u00fccher Schweiz 8,89\u20ac",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES",
+                    "default": false
+                }
+            ],
+            "handlingTime": {
+                "value": 3,
+                "unit": "DAY"
+            },
+            "shipToLocations": {
+                "regionIncluded": [
+                    {
+                        "regionName": "Worldwide"
+                    }
+                ]
+            },
+            "shippingOptions": [
+                {
+                    "optionType": "DOMESTIC",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_DPBuecherWarensendung",
+                            "shippingCost": {
+                                "value": "0.0",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.0",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": true,
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                },
+                {
+                    "optionType": "INTERNATIONAL",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_deutschePostWarenpostInternational",
+                            "shippingCost": {
+                                "value": "7.0",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.5",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "AT"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        },
+                        {
+                            "sortOrder": 2,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_deutschePostWarenpostInternational",
+                            "shippingCost": {
+                                "value": "8.89",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.5",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "CH"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        },
+                        {
+                            "sortOrder": 3,
+                            "shippingCarrierCode": "DHL",
+                            "shippingServiceCode": "DE_DHLPaketIntlExpress",
+                            "shippingCost": {
+                                "value": "10.0",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.5",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "Worldwide"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                }
+            ],
+            "globalShipping": false,
+            "pickupDropOff": false,
+            "freightShipping": false,
+            "fulfillmentPolicyId": "223587557013"
+        },
+        {
+            "name": "Standartversand B\u00fccher Deutschland Copy",
+            "description": "Standartversand B\u00fccher Deutschland. 2,50\u20ac f\u00fcr jedes Buch. Versand \u00fcber B\u00fccher/Warensendung.\nStandartversand B\u00fccher \u00d6sterreich 7\u20ac\nStandartversand B\u00fccher Schweiz 8,89\u20ac",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES",
+                    "default": false
+                }
+            ],
+            "handlingTime": {
+                "value": 3,
+                "unit": "DAY"
+            },
+            "shipToLocations": {
+                "regionIncluded": [
+                    {
+                        "regionName": "Worldwide"
+                    }
+                ]
+            },
+            "shippingOptions": [
+                {
+                    "optionType": "DOMESTIC",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_DPBuecherWarensendung",
+                            "shippingCost": {
+                                "value": "2.25",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.0",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                },
+                {
+                    "optionType": "INTERNATIONAL",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_deutschePostWarenpostInternational",
+                            "shippingCost": {
+                                "value": "7.0",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.5",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "AT"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        },
+                        {
+                            "sortOrder": 2,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_deutschePostWarenpostInternational",
+                            "shippingCost": {
+                                "value": "8.89",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.5",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "CH"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                }
+            ],
+            "globalShipping": false,
+            "pickupDropOff": false,
+            "freightShipping": false,
+            "fulfillmentPolicyId": "225431989013"
+        },
+        {
+            "name": "Kostenloser Versand",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES",
+                    "default": false
+                }
+            ],
+            "handlingTime": {
+                "value": 1,
+                "unit": "DAY"
+            },
+            "shipToLocations": {
+                "regionIncluded": [
+                    {
+                        "regionName": "AT"
+                    }
+                ]
+            },
+            "shippingOptions": [
+                {
+                    "optionType": "DOMESTIC",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "GENERIC",
+                            "shippingServiceCode": "DE_eBayVersandPacklinkStandard",
+                            "shippingCost": {
+                                "value": "0.0",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "0.0",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": true,
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                },
+                {
+                    "optionType": "INTERNATIONAL",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "DHL",
+                            "shippingServiceCode": "DE_DHLPackchenInternational",
+                            "shippingCost": {
+                                "value": "6.95",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "6.95",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "shipToLocations": {
+                                "regionIncluded": [
+                                    {
+                                        "regionName": "AT"
+                                    }
+                                ]
+                            },
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                }
+            ],
+            "globalShipping": false,
+            "pickupDropOff": false,
+            "freightShipping": false,
+            "fulfillmentPolicyId": "225478253013"
+        },
+        {
+            "name": "Versand Rheingutbuch",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES",
+                    "default": false
+                }
+            ],
+            "handlingTime": {
+                "value": 3,
+                "unit": "DAY"
+            },
+            "shipToLocations": {},
+            "shippingOptions": [
+                {
+                    "optionType": "DOMESTIC",
+                    "costType": "FLAT_RATE",
+                    "shippingServices": [
+                        {
+                            "sortOrder": 1,
+                            "shippingCarrierCode": "Deutsche Post",
+                            "shippingServiceCode": "DE_DPBuecherWarensendung",
+                            "shippingCost": {
+                                "value": "2.25",
+                                "currency": "EUR"
+                            },
+                            "additionalShippingCost": {
+                                "value": "2.25",
+                                "currency": "EUR"
+                            },
+                            "freeShipping": false,
+                            "buyerResponsibleForShipping": false,
+                            "buyerResponsibleForPickup": false
+                        }
+                    ],
+                    "rateTableId": "5180076012",
+                    "shippingDiscountProfileId": "0",
+                    "shippingPromotionOffered": false
+                }
+            ],
+            "globalShipping": false,
+            "pickupDropOff": false,
+            "freightShipping": false,
+            "fulfillmentPolicyId": "227174144013"
+        }
+    ],
+    "payment": [
+        {
+            "name": "Zahlung f\u00fcr B\u00fccher",
+            "description": "F\u00fcr alle B\u00fccher die \u00fcber den Bot generiert werden",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES",
+                    "default": false
+                }
+            ],
+            "paymentMethods": [],
+            "immediatePay": false,
+            "paymentPolicyId": "223587471013"
+        }
+    ],
+    "return": [
+        {
+            "name": "R\u00fcckgabe f\u00fcr B\u00fccher",
+            "description": "R\u00fcckgabebedingung f\u00fcr die B\u00fccher. Es werden keine R\u00fcckgaben akzeptiert.",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES"
+                }
+            ],
+            "returnsAccepted": true,
+            "returnPeriod": {
+                "value": 1,
+                "unit": "MONTH"
+            },
+            "returnShippingCostPayer": "BUYER",
+            "returnInstructions": "Widerrufsbelehrung\n\nWiderrufsrecht\n\nSie haben das Recht, binnen vierzehn Tagen ohne Angabe von Gr\u00fcnden diesen Vertrag zu widerrufen.\n\nDie Widerrufsfrist betr\u00e4gt vierzehn Tage ab dem Tag im Falle eines Kaufvertrags an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Bef\u00f6rderer ist, die Waren in Besitz genommen haben bzw. hat.\n\nUm Ihr Widerrufsrecht auszu\u00fcben, m\u00fcssen Sie uns Benedikt Faude St.Georgs-Weg 5 78567 Fridingen mittels einer eindeutigen Erkl\u00e4rung (z. B. ein mit der Post versandter Brief oder eine E-Mail) \u00fcber Ihren Entschluss, diesen Vertrag zu widerrufen, informieren. Sie k\u00f6nnen daf\u00fcr das beigef\u00fcgte Muster-Widerrufsformular verwenden, das jedoch nicht vorgeschrieben ist. \n\nZur Wahrung der Widerrufsfrist reicht es aus, dass Sie die Mitteilung \u00fcber die Aus\u00fcbung des Widerrufsrechts vor Ablauf der Widerrufsfrist absenden.\n\nFolgen des Widerrufs:\nWenn Sie diesen Vertrag widerrufen, haben wir Ihnen alle Zahlungen, die wir von Ihnen erhalten haben, einschlie\u00dflich der Lieferkosten (mit Ausnahme der zus\u00e4tzlichen Kosten, die sich daraus ergeben, dass Sie eine andere Art der Lieferung als die von uns angebotene, g\u00fcnstigste Standardlieferung gew\u00e4hlt haben), unverz\u00fcglich und sp\u00e4testens binnen vierzehn Tagen ab dem Tag zur\u00fcckzuzahlen, an dem die Mitteilung \u00fcber Ihren Widerruf dieses Vertrags bei uns eingegangen ist. F\u00fcr diese R\u00fcckzahlung verwenden wir dasselbe Zahlungsmittel, das Sie bei der urspr\u00fcnglichen Transaktion eingesetzt haben, es sei denn, mit Ihnen wurde ausdr\u00fccklich etwas anderes vereinbart; in keinem Fall werden Ihnen wegen dieser R\u00fcckzahlung Entgelte berechnet. \nWir k\u00f6nnen die R\u00fcckzahlung verweigern, bis wir die Waren wieder zur\u00fcckerhalten haben oder bis Sie den Nachweis erbracht haben, dass Sie die Waren zur\u00fcckgesandt haben, je nachdem, welches der fr\u00fchere Zeitpunkt ist.\n\nSie haben die Waren unverz\u00fcglich und in jedem Fall sp\u00e4testens binnen vierzehn Tagen ab dem Tag, an dem Sie uns \u00fcber den Widerruf dieses Vertrags unterrichten, an uns oder an  zur\u00fcckzusenden oder zu \u00fcbergeben. Die Frist ist gewahrt, wenn Sie die Waren vor Ablauf der Frist von vierzehn Tagen absenden.\nSie tragen die unmittelbaren Kosten der R\u00fccksendung der Waren.\n\n\n\n",
+            "internationalOverride": {
+                "returnsAccepted": false
+            },
+            "returnPolicyId": "223587481013"
+        },
+        {
+            "name": "1 month 51feb4561a28000",
+            "marketplaceId": "EBAY_DE",
+            "categoryTypes": [
+                {
+                    "name": "ALL_EXCLUDING_MOTORS_VEHICLES"
+                }
+            ],
+            "returnsAccepted": true,
+            "returnPeriod": {
+                "value": 1,
+                "unit": "MONTH"
+            },
+            "returnShippingCostPayer": "BUYER",
+            "returnInstructions": "Widerrufsbelehrung\n\nWiderrufsrecht\n\nSie haben das Recht, binnen vierzehn Tagen ohne Angabe von Gr\u00fcnden diesen Vertrag zu widerrufen.\n\nDie Widerrufsfrist betr\u00e4gt vierzehn Tage ab dem Tag im Falle eines Kaufvertrags an dem Sie oder ein von Ihnen benannter Dritter, der nicht der Bef\u00f6rderer ist, die Waren in Besitz genommen haben bzw. hat.\n\nUm Ihr Widerrufsrecht auszu\u00fcben, m\u00fcssen Sie uns Benedikt Faude St.Georgs-Weg 5 78567 Fridingen mittels einer eindeutigen Erkl\u00e4rung (z. B. ein mit der Post versandter Brief oder eine E-Mail) \u00fcber Ihren Entschluss, diesen Vertrag zu widerrufen, informieren. Sie k\u00f6nnen daf\u00fcr das beigef\u00fcgte Muster-Widerrufsformular verwenden, das jedoch nicht vorgeschrieben ist. \n\nZur Wahrung der Widerrufsfrist reicht es aus, dass Sie die Mitteilung \u00fcber die Aus\u00fcbung des Widerrufsrechts vor Ablauf der Widerrufsfrist absenden.\n\nFolgen des Widerrufs:\nWenn Sie diesen Vertrag widerrufen, haben wir Ihnen alle Zahlungen, die wir von Ihnen erhalten haben, einschlie\u00dflich der Lieferkosten (mit Ausnahme der zus\u00e4tzlichen Kosten, die sich daraus ergeben, dass Sie eine andere Art der Lieferung als die von uns angebotene, g\u00fcnstigste Standardlieferung gew\u00e4hlt haben), unverz\u00fcglich und sp\u00e4testens binnen vierzehn Tagen ab dem Tag zur\u00fcckzuzahlen, an dem die Mitteilung \u00fcber Ihren Widerruf dieses Vertrags bei uns eingegangen ist. F\u00fcr diese R\u00fcckzahlung verwenden wir dasselbe Zahlungsmittel, das Sie bei der urspr\u00fcnglichen Transaktion eingesetzt haben, es sei denn, mit Ihnen wurde ausdr\u00fccklich etwas anderes vereinbart; in keinem Fall werden Ihnen wegen dieser R\u00fcckzahlung Entgelte berechnet. \nWir k\u00f6nnen die R\u00fcckzahlung verweigern, bis wir die Waren wieder zur\u00fcckerhalten haben oder bis Sie den Nachweis erbracht haben, dass Sie die Waren zur\u00fcckgesandt haben, je nachdem, welches der fr\u00fchere Zeitpunkt ist.\n\nSie haben die Waren unverz\u00fcglich und in jedem Fall sp\u00e4testens binnen vierzehn Tagen ab dem Tag, an dem Sie uns \u00fcber den Widerruf dieses Vertrags unterrichten, an uns oder an  zur\u00fcckzusenden oder zu \u00fcbergeben. Die Frist ist gewahrt, wenn Sie die Waren vor Ablauf der Frist von vierzehn Tagen absenden.\nSie tragen die unmittelbaren Kosten der R\u00fccksendung der Waren.\n\n\n\n",
+            "returnPolicyId": "231814460013"
+        }
+    ]
+}

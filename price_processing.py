@@ -622,14 +622,14 @@ class PriceProcessing:
             # Konkurrenz-Daten ergänzen
             if comp_data:
                 sql += """,
-                    competitor_min_preis      = $5,
-                    competitor_median_preis   = $6,
-                    empfohlener_ebay_preis    = $7,
-                    anzahl_konkurrenzangebote = $8,
+                    competitor_min_preis      = $6,
+                    competitor_median_preis   = $7,
+                    empfohlener_ebay_preis    = $8,
+                    anzahl_konkurrenzangebote = $9,
                     last_competitor_check     = NOW(),
-                    ebay_condition_filter     = $9,
-                    competitor_filter_level   = $10,
-                    outlier_removed_count     = $11
+                    ebay_condition_filter     = $10,
+                    competitor_filter_level   = $11,
+                    outlier_removed_count     = $12
                 """
                 params.extend([
                     comp_data.get("min_preis"),

@@ -1,3 +1,4 @@
+import re
 import json
 import os
 import logging
@@ -14,20 +15,33 @@ upload_semaphore = asyncio.Semaphore(5)  # Max 5 concurrent uploads to respect r
 def map_ebay_condition(bl_condition: str) -> str:
     """
     Maps Booklooker condition strings to eBay Inventory API condition enums.
-    Values: NEW, LIKE_NEW, VERY_GOOD, GOOD, ACCEPTABLE
+    Valid for Books category (268): NEW, USED_VERY_GOOD, USED_GOOD, USED_ACCEPTABLE.
     """
     if not bl_condition:
-        return "GOOD"
-    c = bl_condition.lower()
-    if any(x in c for x in ["wie neu", "neu"]):
-        return "LIKE_NEW"
+        return "USED_GOOD"
+    c = str(bl_condition).lower()
+    if "neu" in c and "wie neu" not in c:
+        return "NEW"
+    if "wie neu" in c:
+        return "USED_VERY_GOOD"
     if "sehr gut" in c:
-        return "VERY_GOOD"
+        return "USED_VERY_GOOD"
     if any(x in c for x in ["leichte gebrauchsspuren", "gut"]):
-        return "GOOD"
+        return "USED_GOOD"
     if any(x in c for x in ["deutliche gebrauchsspuren", "akzeptabel", "stark"]):
-        return "ACCEPTABLE"
-    return "GOOD"
+        return "USED_ACCEPTABLE"
+    return "USED_GOOD"
+
+def strip_html(text: str) -> str:
+    """Entfernt HTML-Tags sowie den Inhalt von Style- und Script-Tags."""
+    if not text: return ""
+    # Entferne <style>...</style> und <script>...</script> samt Inhalt
+    text = re.sub(r'<(style|script)[^>]*>.*?</\1>', '', text, flags=re.DOTALL | re.IGNORECASE)
+    # Entferne alle restlichen Tags
+    text = re.sub(r'<[^>]+>', ' ', text)
+    # Konsolidiere Whitespace
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
 
 async def validate_token(session: aiohttp.ClientSession, token: str, base_url: str) -> bool:
     """
@@ -109,8 +123,11 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     aspects = {}
     if book_data.get('sprache'):
         aspects['Sprache'] = [str(book_data['sprache'])[:65]]
-    if book_data.get('autor'):
-        aspects['Autor'] = [str(book_data['autor'])[:65]]
+    
+    # [BUG E] Autor ist Pflichtfeld für Bücher (268)
+    author_raw = book_data.get('autor') or ''
+    aspects['Autor'] = [str(author_raw).strip()[:65] if author_raw else "Unbekannt"]
+
     if book_data.get('publisher'):
         aspects['Verlag'] = [str(book_data['publisher'])[:65]]
     if book_data.get('erscheinungsjahr'):
@@ -159,29 +176,81 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     }
     html_description = generate_description(template_data)
 
-    # Condition Description für eBay (prominent oben beim Preis)
-    bl_cond = book_data.get('bl_condition', '')
-    internal_notes = book_data.get('description', '')
-    condition_desc = f"Zustand: {bl_cond}. {internal_notes}".strip()
-    if len(condition_desc) > 1000:
-        condition_desc = condition_desc[:997] + "..."
+    # Condition Description nur bei gebrauchten Artikeln (nicht bei NEW)
+    condition_desc = None
+    if condition != "NEW":
+        bl_cond = (book_data.get('bl_condition') or '').strip()
+        # "None" als String abfangen
+        if bl_cond.lower() == 'none': bl_cond = ''
+
+        # HTML entfernen aus den internen Notizen
+        clean_notes = strip_html(book_data.get('description') or '')
+        
+        if bl_cond and clean_notes:
+            raw_desc = f"Zustand: {bl_cond}. {clean_notes}"
+        elif bl_cond:
+            raw_desc = f"Zustand: {bl_cond}"
+        else:
+            raw_desc = clean_notes
+            
+        # Finale Bereinigung (doppelte Punkte etc.) und Kürzung auf 1000 Zeichen
+        condition_desc = re.sub(r'\.\s*\.', '.', raw_desc).strip()
+        # [BUG 4 Fix] Falls es nur ein Punkt ist oder mit Zustand: . anfängt
+        condition_desc = re.sub(r'^Zustand\s*:\s*\.?\s*', 'Zustand: ', condition_desc)
+        if condition_desc in ("Zustand:", "Zustand: .", "."):
+            condition_desc = ""
+        
+        condition_desc = condition_desc[:1000].strip()
+        if not condition_desc:
+            condition_desc = None # Ganz weglassen wenn leer
+
+    # Robustes Image-URL Parsing (filtert leere oder "None" Strings)
+    raw_photos = book_data.get('photo') or ''
+    image_urls = [
+        url.strip()
+        for url in str(raw_photos).split('|')
+        if url.strip() and url.strip().lower() != 'none'
+    ]
+
+    # [BUG A] Description auf 4000 Zeichen begrenzen (Safety Limit für eBay)
+    final_desc = html_description
+    if len(final_desc) > 4000:
+        logger.warning(f"Description still too long ({len(final_desc)} chars). Using compact fallback.")
+        # Wenn immer noch > 4000, bauen wir eine radikal gekürzte Version mit Basis-HTML
+        author_text = f" von {book_data.get('autor')}" if book_data.get('autor') else ""
+        compact_html = (
+            f"<div style='font-family:sans-serif;padding:15px;line-height:1.5;'>"
+            f"<h1 style='font-size:18px;color:#0053a0;'>{book_data.get('title', 'Buch')}</h1>"
+            f"<p><b>Autor:</b> {book_data.get('autor', 'Unbekannt')}<br>"
+            f"<b>Verlag:</b> {book_data.get('publisher', 'Unbekannt')}</p>"
+            f"<hr style='border:none;border-top:1px solid #eee;margin:15px 0;'>"
+            f"<p style='font-style:italic;'>{clean_notes[:3000]}</p>"
+            f"<p style='font-size:12px;color:#888;margin-top:20px;'>Vielen Dank für Ihren Einkauf!</p>"
+            f"</div>"
+        )
+        final_desc = compact_html[:3990]
 
     payload = {
         "product": {
             "title": str(book_data.get("title", ""))[:80],  # eBay max title length is 80
-            "description": html_description,
-            "imageUrls": str(book_data['photo']).split('|') if book_data.get('photo') else [],
+            "description": final_desc,
+            "imageUrls": image_urls,
             "aspects": aspects,
             "isbn": [book_data['isbn']]
         },
         "condition": condition,
-        "conditionDescription": condition_desc,
         "availability": {
             "shipToLocationAvailability": {
                 "quantity": 1
             }
         }
     }
+    
+    if condition_desc:
+        payload["conditionDescription"] = condition_desc
+
+    # Debug-Logging für Payload (hilft bei Serialization Errors)
+    logger.info(f"Inventory Item Payload für ISBN {book_data['isbn']}: {json.dumps(payload)}")
 
     async with session.put(url, headers=headers, json=payload) as resp:
         if resp.status in (200, 201, 204):
@@ -225,13 +294,12 @@ async def create_offer(session: aiohttp.ClientSession, book_data: dict, token: s
             "value": str(original_p),
             "currency": "EUR"
         }
-        pricing_summary["pricingVisibility"] = "STP"
 
     payload = {
         "sku": book_data['isbn'],
         "marketplaceId": "EBAY_DE",
         "format": "FIXED_PRICE",
-        "merchantLocationKey": "DEFAULT",
+        "merchantLocationKey": "hauptlager",
         "pricingSummary": pricing_summary,
         "tax": {
             "vatPercentage": 7.0
@@ -461,19 +529,19 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         logger.info("Starting eBay Upload Batch...")
         
         # 0. Sicherstellen, dass die globale Mengenrabatt-Promotion aktiv ist (5% ab 2 Artikeln)
-        await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
+        # await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
         
-        books_to_upload = await get_unlisted_books(db_pool, limit=50, specific_ids=specific_ids)
+        books = await get_unlisted_books(db_pool, specific_ids=specific_ids)
         
-        if not books_to_upload:
+        if not books:
             logger.info("No unlisted books found with valid ISBN.")
             return
 
-        logger.info(f"Found {len(books_to_upload)} books to upload.")
+        logger.info(f"Found {len(books)} books to upload.")
 
         tasks = [
             asyncio.create_task(_process_single_book(session, book, db_pool, EBAY_USER_TOKEN, EBAY_BASE_URL, policies))
-            for book in books_to_upload
+            for book in books
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
     
