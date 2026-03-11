@@ -275,7 +275,7 @@ MAX_RETRIES = 2
 BATCH_SIZE = 200  # für gather in Blöcken
 
 
-async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, token=None, base_url=None, fixed_costs=None, total_listings=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None):
+async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, token=None, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
     """
     Verarbeitet EIN library-Datensatz robust:
     - ISBN prüfen (löscht bei missing)
@@ -306,10 +306,11 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     token=token,
                     base_url=base_url,
                     fixed_costs_monthly=fixed_costs,
-                    total_listings=total_listings,
+                    expected_sales=expected_sales,
                     min_margin_req=min_margin,
                     addcost_low_mid=zusatzkosten_low,
-                    addcost_high=zusatzkosten_high
+                    addcost_high=zusatzkosten_high,
+                    steuer_satz=steuer_satz
                 )
 
                 # Wenn unrentabel, in separate Tabelle verschieben
@@ -365,22 +366,25 @@ async def process_library_links_async(db_pool):
     import os
     from decimal import Decimal
 
-    token = os.getenv("EBAY_USER_TOKEN")
+    from ebay_token_manager import get_token
+    token = get_token()
     env_str = os.getenv("EBAY_ENV", "PRODUCTION")
     base_url = "https://api.ebay.com" if env_str == "PRODUCTION" else "https://api.sandbox.ebay.com"
 
     try:
         fixed_costs = Decimal(os.getenv("FIXKOSTEN_MONATLICH", "79.95").replace(',', '.'))
-        total_listings = int(os.getenv("ANZAHL_LISTINGS", "2500"))
+        expected_sales = int(os.getenv("ERWARTETE_VERKAEUFE", "200"))
         min_margin = Decimal(os.getenv("MINDESTMARGE", "2.50").replace(',', '.'))
         zusatzkosten_low = Decimal(os.getenv("ZUSATZKOSTEN_LOW_MID", "0.50").replace(',', '.'))
         zusatzkosten_high = Decimal(os.getenv("ZUSATZKOSTEN_HIGH", "1.75").replace(',', '.'))
+        steuer_satz = Decimal(os.getenv("STEUERSATZ", "7.0").replace(',', '.'))
     except Exception:
         fixed_costs = Decimal("79.95")
-        total_listings = 2500
+        expected_sales = 200
         min_margin = Decimal("2.50")
         zusatzkosten_low = Decimal("0.50")
         zusatzkosten_high = Decimal("1.75")
+        steuer_satz = Decimal("7.0")
 
     try:
         async with db_pool.acquire() as conn:
@@ -410,7 +414,7 @@ async def process_library_links_async(db_pool):
                 batch = rows[i: i + BATCH_SIZE]
                 tasks = [
                     asyncio.create_task(_process_one_entry(
-                        session, row, db_pool, token, base_url, fixed_costs, total_listings, min_margin, zusatzkosten_low, zusatzkosten_high
+                        session, row, db_pool, token, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz
                     )) for row in batch
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)

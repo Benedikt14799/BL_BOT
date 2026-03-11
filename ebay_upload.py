@@ -7,6 +7,7 @@ import aiohttp
 from decimal import Decimal
 from datetime import datetime, timedelta
 from ebay_template import generate_description, get_condition_metadata
+from description_filter import filter_description
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
         'language': book_data.get('sprache', 'Deutsch'),
         'condition': cond_meta['text'],
         'condition_color': cond_meta['color'],
-        'extra_notes': book_data.get('description', ''),
+        'extra_notes': filter_description(book_data.get('description', '')),
         'shipping_cost': os.environ.get("SHIPPING_DESCRIPTION_EBAY", "Standardversand"),
         'delivery_time': os.environ.get("DELIVERY_TIME_EBAY", "1-3 Werktage")
     }
@@ -184,7 +185,7 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
         if bl_cond.lower() == 'none': bl_cond = ''
 
         # HTML entfernen aus den internen Notizen
-        clean_notes = strip_html(book_data.get('description') or '')
+        clean_notes = filter_description(strip_html(book_data.get('description') or ''))
         
         if bl_cond and clean_notes:
             raw_desc = f"Zustand: {bl_cond}. {clean_notes}"
@@ -495,7 +496,8 @@ async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token:
 
 
 async def run_upload_batch(db_pool, specific_ids: list = None):
-    EBAY_USER_TOKEN = os.environ.get("EBAY_USER_TOKEN")
+    from ebay_token_manager import get_token
+    EBAY_USER_TOKEN = get_token()
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
     EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID")
     EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID")
@@ -638,3 +640,147 @@ async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, b
     except Exception as e:
         logger.error(f"Error in withdraw_offer for SKU {sku}: {e}")
         return False
+
+
+async def run_inventory_reconciliation(db_pool) -> dict:
+    """
+    Vergleicht die lokalen DB-Einträge mit den tatsächlich auf eBay aktiven Inseraten (Trading API).
+    Listings, deren ebay_listing_id nicht mehr auf eBay aktiv ist (aber in der DB noch ebay_listed=True sind),
+    werden in der DB auf ebay_listed=False gesetzt.
+    Rückgabe: Statistik-Dict
+    """
+    import xml.etree.ElementTree as ET
+    from ebay_token_manager import get_token
+    
+    token = get_token()
+    env = os.environ.get("EBAY_ENV", "SANDBOX")
+    
+    if env == "PRODUCTION":
+        endpoint = "https://api.ebay.com/ws/api.dll"
+    else:
+        endpoint = "https://api.sandbox.ebay.com/ws/api.dll"
+    
+    if not token:
+        logger.error("Kein eBay-Token für den Bestandsabgleich verfügbar.")
+        return {"error": "Kein eBay-Token vorhanden."}
+
+    logger.info("Starte eBay-Bestandsabgleich via Trading API (Fetching active ItemIDs)...")
+    
+    active_ebay_item_ids = set()
+    page_number = 1
+    entries_per_page = 200
+    has_more = True
+    
+    headers = {
+        "X-EBAY-API-SITEID": "77", # Germany
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "967",
+        "X-EBAY-API-CALL-NAME": "GetMyeBaySelling",
+        "X-EBAY-API-IAF-TOKEN": token,
+        "Content-Type": "text/xml"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        # 1. Alle aktiven ItemIDs von eBay holen (Paginierung)
+        while has_more:
+            # Wichtig: <ActiveList> anstatt <ActiveListings>, sonst gibt eBay eine leere Liste!
+            request_xml = f"""<?xml version="1.0" encoding="utf-8"?>
+<GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <DetailLevel>ReturnAll</DetailLevel>
+  <ActiveList>
+    <Pagination>
+      <EntriesPerPage>{entries_per_page}</EntriesPerPage>
+      <PageNumber>{page_number}</PageNumber>
+    </Pagination>
+  </ActiveList>
+</GetMyeBaySellingRequest>
+"""
+            try:
+                async with session.post(endpoint, headers=headers, data=request_xml) as resp:
+                    if resp.status != 200:
+                        resp_text = await resp.text()
+                        logger.error(f"Fehler beim eBay Trading API Fetch ({resp.status}): {resp_text}")
+                        return {"error": f"API Fehler: {resp.status}"}
+                    
+                    xml_text = await resp.text()
+                    root = ET.fromstring(xml_text)
+                    
+                    # XML Namespace handling
+                    ns = {'ebay': 'urn:ebay:apis:eBLBaseComponents'}
+                    
+                    ack = root.find('.//ebay:Ack', ns)
+                    if ack is not None and ack.text not in ['Success', 'Warning']:
+                        err_msg = root.find('.//ebay:Errors/ebay:LongMessage', ns)
+                        err_text = err_msg.text if err_msg is not None else "Unknown API Error"
+                        logger.error(f"Trading API Error: {err_text}")
+                        return {"error": err_text}
+
+                    active_list = root.find('.//ebay:ActiveList', ns)
+                    if active_list is not None:
+                        item_array = active_list.find('ebay:ItemArray', ns)
+                        if item_array is not None:
+                            for item in item_array.findall('ebay:Item', ns):
+                                item_id = item.find('ebay:ItemID', ns)
+                                if item_id is not None and item_id.text:
+                                    active_ebay_item_ids.add(item_id.text)
+                        
+                        pagination_result = active_list.find('ebay:PaginationResult', ns)
+                        if pagination_result is not None:
+                            total_pages = pagination_result.find('ebay:TotalNumberOfPages', ns)
+                            if total_pages is not None and int(total_pages.text) > page_number:
+                                page_number += 1
+                            else:
+                                has_more = False
+                        else:
+                            has_more = False
+                    else:
+                        has_more = False
+
+            except Exception as e:
+                logger.error(f"Exception beim Abrufen der eBay ActiveList: {e}")
+                return {"error": str(e)}
+
+    # 2. Lokale DB abgleichen
+    stats = {
+        "total_ebay": len(active_ebay_item_ids),
+        "total_db": 0,
+        "corrected": 0,
+        "ebay_only": 0
+    }
+    
+    try:
+        async with db_pool.acquire() as conn:
+            # Hole alle Einträge, die laut DB auf eBay gelistet sind (ebay_listing_id wird hierfür benötigt)
+            db_listed = await conn.fetch("SELECT id, ebay_listing_id FROM library WHERE ebay_listed = TRUE AND ebay_listing_id IS NOT NULL")
+            stats["total_db"] = len(db_listed)
+            
+            db_item_ids = {row["ebay_listing_id"] for row in db_listed}
+            
+            # DB-Einträge, deren ItemID NICHT aktiv auf eBay ist:
+            to_delist_ids = []
+            for row in db_listed:
+                if row["ebay_listing_id"] not in active_ebay_item_ids:
+                    to_delist_ids.append(row["id"])
+                    
+            if to_delist_ids:
+                # Markiere sie in der DB als NICHT mehr gelistet
+                await conn.execute("""
+                    UPDATE library 
+                    SET ebay_listed = FALSE, 
+                        ebay_delisted_reason = 'Reconciliation: ItemID not found in active eBay listings',
+                        ebay_status = 'pending'
+                    WHERE id = ANY($1::int[])
+                """, to_delist_ids)
+                
+                stats["corrected"] = len(to_delist_ids)
+                logger.info(f"Habe {len(to_delist_ids)} Artikel lokal delisted, da sie auf eBay nicht mehr aktiv sind.")
+            
+            # (Optional) Zählen, wie viele SKUs auf eBay sind, aber lokal NICHT gelistet sind
+            ebay_only_item_ids = active_ebay_item_ids - db_item_ids
+            stats["ebay_only"] = len(ebay_only_item_ids)
+            
+    except Exception as e:
+        logger.error(f"Fehler beim Datenbank-Abgleich: {e}")
+        return {"error": str(e)}
+        
+    logger.info(f"Bestandsabgleich abgeschlossen: eBay({stats['total_ebay']}), DB({stats['total_db']}), Korrigiert({stats['corrected']})")
+    return stats

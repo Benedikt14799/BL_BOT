@@ -1,8 +1,21 @@
 # picture_processing.py
 import logging
+import re
 from typing import List
 import aiohttp
 from bs4 import BeautifulSoup
+
+# Booklooker Bild-URLs: Zwei verschiedene Formate in volle Auflösung konvertieren
+# Muster A: /u{buchstabe}{ziffern}/Name.jpg  →  /ux{ziffern}/Name.jpg   (z.B. /ut03ldlm/ → /ux03ldlm/)
+# Muster B: /{buchstabe}/{isbn}/Name.jpg     →  /x/{isbn}/Name.jpg      (z.B. /t/978.../ → /x/978.../)
+_BL_PATTERN_A = re.compile(r'(images\.booklooker\.de/u)[a-wyzA-WYZ](\d)')
+_BL_PATTERN_B = re.compile(r'(images\.booklooker\.de/)[a-wyzA-WYZ](/)')
+
+def _to_xxl(url: str) -> str:
+    """Konvertiert eine Booklooker Bild-URL in die XXL-Variante."""
+    url = _BL_PATTERN_A.sub(r'\1x\2', url)
+    url = _BL_PATTERN_B.sub(r'\1x\2', url)
+    return url
 
 from database import DatabaseManager
 
@@ -39,22 +52,43 @@ class PictureProcessing:
             except aiohttp.ClientError as e:
                 logger.warning(f"[{num}] DNB-Cover-Anfrage fehlgeschlagen: {e}")
 
-        # 2) Booklooker-Vorschaubilder extrahieren (XXL via href)
+        # 2) Booklooker-Vorschaubilder extrahieren (in voller Auflösung)
         preview_links = soup.find_all("a", class_="previewTop")[:24]
         if preview_links:
             for idx, a in enumerate(preview_links, start=1):
+                img_url = None
+
+                # Bevorzugt: href direkt (ist im Browser die XXL-URL)
                 href = a.get("href", "").strip()
                 if href.startswith("https://"):
-                    picture_links.append(href)
-                    logger.info(f"[{num}] Bild {idx} (XXL via href): {href}")
-        else:
-            # Fallback: einzelnes Hauptbild aus id="currentImage"
+                    img_url = href
+
+                # Fallback: das <img> innerhalb des <a> (Server-HTML hat absolute src)
+                if not img_url:
+                    img_inside = a.find("img")
+                    if img_inside:
+                        src = img_inside.get("src", "").strip()
+                        if src.startswith("https://"):
+                            img_url = src
+
+                if img_url:
+                    # Alle Größen → XXL konvertieren
+                    img_url_xxl = _to_xxl(img_url)
+                    picture_links.append(img_url_xxl)
+                    if img_url_xxl != img_url:
+                        logger.info(f"[{num}] Bild {idx} (XXL): {img_url_xxl}")
+                    else:
+                        logger.info(f"[{num}] Bild {idx}: {img_url_xxl}")
+
+        # Fallback: Hauptbild aus id="currentImage" (wenn noch keine Bilder)
+        if not picture_links:
             main_img = soup.find("img", id="currentImage")
             if main_img:
                 src = main_img.get("src", "").strip()
                 if src.startswith("https://"):
-                    picture_links.append(src)
-                    logger.info(f"[{num}] Fallback currentImage: {src}")
+                    src_xxl = _to_xxl(src)
+                    picture_links.append(src_xxl)
+                    logger.info(f"[{num}] Fallback currentImage (XXL): {src_xxl}")
 
         # 3) String bauen und in DB speichern (Zusätzliche Sicherheit)
         picture_links = list(dict.fromkeys(picture_links))

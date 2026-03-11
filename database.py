@@ -199,7 +199,8 @@ class DatabaseManager:
                     ADD COLUMN IF NOT EXISTS zielgruppe TEXT,
                     ADD COLUMN IF NOT EXISTS signiert_von VARCHAR(255),
                     ADD COLUMN IF NOT EXISTS literarische_bewegung TEXT,
-                    ADD COLUMN IF NOT EXISTS ausgabe TEXT;
+                    ADD COLUMN IF NOT EXISTS ausgabe TEXT,
+                    ADD COLUMN IF NOT EXISTS ebay_delisted_reason TEXT;
                 """)
                 logger.info("Migration: Struktur von library für eBay-Upload und Konkurrenzcheck v2 aktualisiert.")
             except Exception as e:
@@ -228,6 +229,38 @@ class DatabaseManager:
                 );
             """)
             logger.info("Tabelle 'unprofitable_listings' existiert nun oder wurde neu angelegt.")
+
+            # Neue Tabelle für den Sync-Dienst (verkaufte oder nicht mehr rentable Artikel)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS sold_listings (
+                    library_id   INTEGER PRIMARY KEY,
+                    link         TEXT NOT NULL,
+                    sku          VARCHAR(50),
+                    title        VARCHAR(255),
+                    marker       VARCHAR(50),
+                    recorded_at  TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            logger.info("Tabelle 'sold_listings' existiert nun oder wurde neu angelegt.")
+
+            # Neue Tabelle für das Arbitrage-Reporting
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS arbitrage_reporting (
+                    order_id         VARCHAR(100) PRIMARY KEY,
+                    sku              VARCHAR(50),
+                    title            VARCHAR(255),
+                    ebay_sale_price  NUMERIC,
+                    bl_purchase_price NUMERIC,
+                    bl_shipping_cost NUMERIC,
+                    ebay_fee         NUMERIC,
+                    net_margin       NUMERIC,
+                    status           VARCHAR(50),
+                    screenshot_path  TEXT,
+                    created_at       TIMESTAMP DEFAULT NOW(),
+                    updated_at       TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            logger.info("Tabelle 'arbitrage_reporting' existiert nun oder wurde neu angelegt.")
 
     @staticmethod
     async def insert_library_entry(db_pool, properties: dict):
@@ -302,6 +335,31 @@ class DatabaseManager:
             logger.info(f"Unrentables Listing aufgezeichnet und library_id {library_id} gelöscht. Preis={price}€, Marge={margin}€")
         except Exception as e:
             logger.error(f"Fehler beim Aufzeichnen von unprofitable_listing {library_id}: {e}")
+
+    @staticmethod
+    async def record_sold_listing(db_pool, library_id: int, link: str, sku: str, title: str, marker: str):
+        """
+        Verschiebt ein bei Booklooker verkauftes (oder nach Sync unrentables) Angebot aus library in sold_listings.
+        Marker Beispiele: 'sold_on_bl', 'unprofitable_after_sync'
+        """
+        try:
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    WITH deleted AS (
+                        DELETE FROM library WHERE id = $1
+                    )
+                    INSERT INTO sold_listings (library_id, link, sku, title, marker)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (library_id) DO UPDATE SET
+                        link = EXCLUDED.link,
+                        sku = EXCLUDED.sku,
+                        title = EXCLUDED.title,
+                        marker = EXCLUDED.marker,
+                        recorded_at = NOW()
+                """, library_id, link, sku, title, marker)
+            logger.info(f"Sold Listing aufgezeichnet und library_id {library_id} gelöscht. SKU={sku}, Marker={marker}")
+        except Exception as e:
+            logger.error(f"Fehler beim Aufzeichnen von sold_listing {library_id}: {e}")
 
     @staticmethod
     async def set_foreignkey(db_pool):

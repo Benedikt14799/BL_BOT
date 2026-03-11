@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
+from ttkbootstrap.widgets import ToolTip
 from dotenv import load_dotenv, set_key
 import os
 import threading
@@ -42,47 +43,83 @@ class BLBotApp(tb.Window):
         self.links_path = "links.txt"
         
         # UI Setup
-        self.notebook = tb.Notebook(self, bootstyle="primary")
-        self.notebook.pack(fill=BOTH, expand=True, padx=10, pady=10)
+        # Custom Navigation Bar
+        self.nav_frame = tb.Frame(self, padding=(10, 10, 10, 0))
+        self.nav_frame.pack(fill=X)
         
-        self.tab_dashboard = tb.Frame(self.notebook)
-        self.tab_upload = tb.Frame(self.notebook)
-        self.tab_links = tb.Frame(self.notebook)
-        self.tab_settings = tb.Frame(self.notebook)
+        # Content Area
+        self.container = tb.Frame(self, padding=10)
+        self.container.pack(fill=BOTH, expand=True)
         
-        self.notebook.add(self.tab_dashboard, text="🚀 Scraper Dashboard")
-        self.notebook.add(self.tab_upload, text="📦 Upload Manager")
-        self.notebook.add(self.tab_links, text="🔗 Links")
-        self.notebook.add(self.tab_settings, text="⚙️ Settings")
+        # Define Tab Content Frames
+        self.tab_dashboard = tb.Frame(self.container)
+        self.tab_upload = tb.Frame(self.container)
+        self.tab_links = tb.Frame(self.container)
+        self.tab_settings = tb.Frame(self.container)
+        self.tabs = [self.tab_dashboard, self.tab_upload, self.tab_links, self.tab_settings]
+        
+        # Nav Buttons with physical Space (padx)
+        self.nav_btns = []
+        btn_data = [
+            ("🚀 Scraper Dashboard", self.tab_dashboard),
+            ("📦 Upload Manager", self.tab_upload),
+            ("🔗 Links", self.tab_links),
+            ("⚙️ Settings", self.tab_settings)
+        ]
+        
+        for i, (text, frame) in enumerate(btn_data):
+            btn = tb.Button(
+                self.nav_frame, 
+                text=text, 
+                bootstyle=(SECONDARY, OUTLINE), 
+                command=lambda f=frame, idx=i: self._switch_tab(idx)
+            )
+            btn.pack(side=LEFT, padx=8, pady=5)
+            self.nav_btns.append(btn)
+        
+        # Style tweak: Custom styles are no longer needed for Notebook
         
         self._build_dashboard()
         self._build_upload_manager()
         self._build_links_tab()
         self._build_settings_tab()
         
+        # Default tab
+        self._switch_tab(0)
+        
         # Load initials
         self._load_settings()
         self._load_links()
 
-        # Custom Logger format
+        # Custom Logger format — nur EINMAL einrichten
         self.log_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', '%H:%M:%S')
-        
-        # Setup logging redirection
         self.handler = TextHandler(self.log_text)
         self.handler.setFormatter(self.log_format)
         logging.getLogger().addHandler(self.handler)
         logging.getLogger().setLevel(logging.INFO)
 
+        # Bot State — nur EINMAL initialisieren
         self.db_pool = None
         self.scrape_task = None
         self.auto_sync_active = False
         self.sync_loop_task = None
         
+        # Async Event Loop — nur EINMAL starten
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self._run_async_loop, daemon=True).start()
         
         # Handle clean exit
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def _switch_tab(self, index):
+        """Switches the visible tab content frame."""
+        for i, frame in enumerate(self.tabs):
+            if i == index:
+                frame.pack(fill=BOTH, expand=True)
+                self.nav_btns[i].configure(bootstyle=PRIMARY)
+            else:
+                frame.pack_forget()
+                self.nav_btns[i].configure(bootstyle=(SECONDARY, OUTLINE))
 
     def _run_async_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -238,6 +275,11 @@ class BLBotApp(tb.Window):
 
         self.btn_comp_check = tb.Button(controls, text="Konkurrenzcheck starten", bootstyle=WARNING, command=self.start_competitor_check)
         self.btn_comp_check.pack(side=LEFT, padx=5)
+
+        tb.Separator(controls, orient=VERTICAL).pack(side=LEFT, fill=Y, padx=10)
+
+        self.btn_reconcile = tb.Button(controls, text="🔄 Bestandsabgleich", bootstyle=SECONDARY, command=self.start_reconciliation)
+        self.btn_reconcile.pack(side=LEFT, padx=5)
         
         columns = ("id", "title", "author", "price", "isbn")
         self.tree = tb.Treeview(self.tab_upload, columns=columns, show="headings", bootstyle=INFO, selectmode='extended')
@@ -268,11 +310,14 @@ class BLBotApp(tb.Window):
             "EBAY_APP_ID": tk.StringVar(),
             "EBAY_DEV_ID": tk.StringVar(),
             "EBAY_CERT_ID": tk.StringVar(),
-            "EBAY_USER_TOKEN": tk.StringVar(),
+            "EBAY_CLIENT_ID": tk.StringVar(),
+            "EBAY_CLIENT_SECRET": tk.StringVar(),
+            "EBAY_REFRESH_TOKEN": tk.StringVar(),
             "EBAY_ENV": tk.StringVar(value="SANDBOX"),
             "FIXKOSTEN_MONATLICH": tk.StringVar(value="79.95"),
-            "ANZAHL_LISTINGS": tk.StringVar(value="2500"),
+            "ERWARTETE_VERKAEUFE": tk.StringVar(value="200"),
             "MINDESTMARGE": tk.StringVar(value="2.50"),
+            "STEUERSATZ": tk.StringVar(value="7.0"),
             "ZUSATZKOSTEN_LOW_MID": tk.StringVar(value="0.50"),
             "ZUSATZKOSTEN_HIGH": tk.StringVar(value="1.75"),
             "SHIPPING_DESCRIPTION_EBAY": tk.StringVar(value="Standardversand"),
@@ -282,32 +327,84 @@ class BLBotApp(tb.Window):
         container = tb.Frame(self.tab_settings, padding=20)
         container.pack(fill=BOTH, expand=True)
         
-        row = 0
-        for key, var in self.settings_vars.items():
-            tb.Label(container, text=key, width=20).grid(row=row, column=0, pady=10, sticky=W)
-            if key == "EBAY_ENV":
-                cb = tb.Combobox(container, textvariable=var, values=["SANDBOX", "PRODUCTION"])
-                cb.grid(row=row, column=1, sticky=EW, padx=10)
-            else:
-                tb.Entry(container, textvariable=var, show="*" if "TOKEN" in key or "CERT" in key or "DATABASE" in key else "").grid(row=row, column=1, sticky=EW, padx=10)
-            row += 1
-            
-        container.columnconfigure(1, weight=1)
+        # Left Column: API & Fixkosten
+        left_frame = tb.Frame(container)
+        left_frame.pack(side=LEFT, fill=BOTH, expand=True, padx=5)
         
-        btn_save = tb.Button(container, text="Einstellungen Speichern", bootstyle=SUCCESS, command=self.save_settings)
-        btn_save.grid(row=row, column=0, pady=20, padx=5)
+        # Right Column: Margen & eBay-Einstellungen
+        right_frame = tb.Frame(container)
+        right_frame.pack(side=RIGHT, fill=BOTH, expand=True, padx=5)
 
-        btn_test = tb.Button(container, text="Verbindung Testen", bootstyle=INFO, command=self.test_connection)
-        btn_test.grid(row=row, column=1, pady=20, padx=5)
+        # === LEFT_FRAME ===
+        self._add_setting_row(left_frame, "DATABASE_URL:", "DATABASE_URL", row=0, is_secret=True, is_required=True, tooltip_text="Verbindungsstring zur Supabase-Datenbank (PostgreSQL).")
+        self._add_setting_row(left_frame, "EBAY_APP_ID:", "EBAY_APP_ID", row=1, is_secret=True, is_required=True, tooltip_text="Deine eBay Developer App-ID (Client ID).")
+        self._add_setting_row(left_frame, "EBAY_DEV_ID:", "EBAY_DEV_ID", row=2, is_secret=True, is_required=True, tooltip_text="Deine eBay Developer-ID.")
+        self._add_setting_row(left_frame, "EBAY_CERT_ID:", "EBAY_CERT_ID", row=3, is_secret=True, is_required=True, tooltip_text="Deine eBay Developer Cert-ID (Client Secret).")
+        self._add_setting_row(left_frame, "EBAY_CLIENT_ID:", "EBAY_CLIENT_ID", row=4, is_secret=True, is_required=True, tooltip_text="Deine eBay OAuth Client-ID (identisch mit App-ID, wird für den Token-Refresh benötigt).")
+        self._add_setting_row(left_frame, "EBAY_CLIENT_SECRET:", "EBAY_CLIENT_SECRET", row=5, is_secret=True, is_required=True, tooltip_text="Dein eBay OAuth Client Secret (identisch mit Cert-ID, wird für den Token-Refresh benötigt).")
+        self._add_setting_row(left_frame, "EBAY_REFRESH_TOKEN:", "EBAY_REFRESH_TOKEN", row=6, is_secret=True, is_required=True, tooltip_text="Einmalig generierter Refresh Token (18 Monate gültig). Der Access Token wird automatisch erneuert.")
+        self._add_setting_row(left_frame, "EBAY_ENV:", "EBAY_ENV", row=7, is_combobox=True, tooltip_text="SANDBOX für Tests, PRODUCTION für echte eBay-Aufschaltungen.")
+        self._add_setting_row(left_frame, "Fixkosten monatlich (€):", "FIXKOSTEN_MONATLICH", row=8, is_required=True, tooltip_text="Gesamte monatliche Kosten des eBay-Shops (z.B. 79.95), die anteilig auf Verkäufe umgelegt werden.")
+        self._add_setting_row(left_frame, "Erwartete Verkäufe:", "ERWARTETE_VERKAEUFE", row=9, is_required=True, tooltip_text="Wie viele Artikel du ca. im Monat verkaufst (zur Umlage der Fixkosten).")
 
-        row += 1
-        self.lbl_fixkosten_hint = tb.Label(container, text="", font=("Helvetica", 8, "italic"))
-        self.lbl_fixkosten_hint.grid(row=row, column=1, sticky=W, padx=10)
+        # Buttons for left frame
+        btn_save = tb.Button(left_frame, text="Einstellungen Speichern", bootstyle=SUCCESS, command=self.save_settings)
+        btn_save.grid(row=10, column=0, pady=20, padx=5)
+
+        btn_test = tb.Button(left_frame, text="Verbindung Testen", bootstyle=INFO, command=self.test_connection)
+        btn_test.grid(row=10, column=1, pady=20, padx=5)
+
+        self.lbl_fixkosten_hint = tb.Label(left_frame, text="= 0.400€ pro Verkauf", font=("Helvetica", 8, "italic"))
+        self.lbl_fixkosten_hint.grid(row=11, column=1, sticky=W, pady=(0, 10))
+        
+        # === RIGHT_FRAME ===
+        self._add_setting_row(right_frame, "Steuersatz MwSt (%):", "STEUERSATZ", row=0, is_required=True, tooltip_text="Dein Umsatzsteuersatz für Bücher. Es wird intern mit 7% Vorsteuer auf den Einkauf gerechnet. Kleinunternehmer = 0.")
+        self._add_setting_row(right_frame, "Mindestmarge netto (€):", "MINDESTMARGE", row=1, is_required=True, tooltip_text="Absoluter Mindestgewinn nach Abzug ALLER Gebühren, Steuern, Portos und Verpackung, der am Ende übrig bleiben muss.")
+        self._add_setting_row(right_frame, "Zusatzkosten (Buch <30€):", "ZUSATZKOSTEN_LOW_MID", row=2, tooltip_text="Pauschalbetrag für Verpackung/Polsterumschläge bei günstigen und mittleren Büchern.")
+        self._add_setting_row(right_frame, "Zusatzkosten (Buch >30€):", "ZUSATZKOSTEN_HIGH", row=3, tooltip_text="Pauschalbetrag für hochwertigere Pakete/Polster für wertvolle Sammlerstücke / Lexikons.")
+        self._add_setting_row(right_frame, "eBay Versandinfo:", "SHIPPING_DESCRIPTION_EBAY", row=4, tooltip_text="Standard Versandprofil-Text für eBay (z.B. 'Standardversand' oder 'Büchersendung').")
+        self._add_setting_row(right_frame, "eBay Lieferzeit:", "DELIVERY_TIME_EBAY", row=5, tooltip_text="Information zur Lieferzeit, die bei eBay als Textbaustein mitübergeben werden soll.")
+        
+        lbl_required = tb.Label(right_frame, text="* Pflichtfelder", font=("Helvetica", 8), bootstyle="danger")
+        lbl_required.grid(row=6, column=1, sticky=E, pady=(10, 0))
+
+        # Configure column weights for frames
+        left_frame.columnconfigure(1, weight=1)
+        right_frame.columnconfigure(1, weight=1)
+
         self._update_fixkosten_hint()
 
         # Update hint when values change
         self.settings_vars["FIXKOSTEN_MONATLICH"].trace_add("write", lambda *a: self._update_fixkosten_hint())
-        self.settings_vars["ANZAHL_LISTINGS"].trace_add("write", lambda *a: self._update_fixkosten_hint())
+        self.settings_vars["ERWARTETE_VERKAEUFE"].trace_add("write", lambda *a: self._update_fixkosten_hint())
+
+    def _add_setting_row(self, parent_frame, label_text, var_key, row, is_secret=False, is_combobox=False, tooltip_text="", is_required=False):
+        lbl_frame = tb.Frame(parent_frame)
+        lbl_frame.grid(row=row, column=0, pady=10, sticky=W)
+        
+        label_full = label_text
+        if is_required:
+            label_full += " *"
+            
+        lbl = tb.Label(lbl_frame, text=label_full)
+        lbl.pack(side=LEFT)
+        
+        if is_required:
+            lbl_star = tb.Label(lbl_frame, text="", bootstyle="danger") # We could put the star in a separate label for color
+            # but appending it to the main label is cleaner for layout. 
+            # Let's just append it to the text in the main label above.
+            pass
+        if tooltip_text:
+            info_lbl = tb.Label(lbl_frame, text=" ℹ️", font=("Helvetica", 9), cursor="hand2")
+            info_lbl.pack(side=LEFT, padx=(0, 5))
+            ToolTip(info_lbl, text=tooltip_text, bootstyle=INFO, delay=100)
+            
+        if is_combobox:
+            cb = tb.Combobox(parent_frame, textvariable=self.settings_vars[var_key], values=["SANDBOX", "PRODUCTION"])
+            cb.grid(row=row, column=1, sticky=EW, padx=10)
+        else:
+            show_char = "*" if is_secret else ""
+            tb.Entry(parent_frame, textvariable=self.settings_vars[var_key], show=show_char).grid(row=row, column=1, sticky=EW, padx=10)
 
     # --- Actions ---
     def refresh_rate_limit(self):
@@ -375,10 +472,10 @@ class BLBotApp(tb.Window):
     def _update_fixkosten_hint(self):
         try:
             fk = float(self.settings_vars["FIXKOSTEN_MONATLICH"].get().replace(',', '.'))
-            n = int(self.settings_vars["ANZAHL_LISTINGS"].get())
+            n = int(self.settings_vars["ERWARTETE_VERKAEUFE"].get())
             if n > 0:
                 val = fk / n
-                self.lbl_fixkosten_hint.configure(text=f"= {val:.3f}€ pro Listing")
+                self.lbl_fixkosten_hint.configure(text=f"= {val:.3f}€ pro Verkauf")
         except:
             self.lbl_fixkosten_hint.configure(text="Ungültige Werte")
 
@@ -388,6 +485,13 @@ class BLBotApp(tb.Window):
             
         for key, var in self.settings_vars.items():
             set_key(self.env_path, key, var.get())
+        
+        # Token Manager zurücksetzen, damit neue Credentials sofort wirken
+        try:
+            from ebay_token_manager import reset as reset_token_manager
+            reset_token_manager()
+        except Exception:
+            pass
             
         messagebox.showinfo("Erfolg", "Einstellungen wurden in der .env aktualisiert.")
 
@@ -440,6 +544,34 @@ class BLBotApp(tb.Window):
         except Exception as e:
             logging.error(f"Error refreshing table: {e}")
             self.after(0, lambda: messagebox.showerror("Fehler", f"Fehler beim Laden der Daten: {e}"))
+
+    def start_reconciliation(self):
+        if messagebox.askyesno("Confirm", "Möchtest du einen Abgleich mit eBay durchführen? Dies kann einen Moment dauern."):
+            asyncio.run_coroutine_threadsafe(self._reconciliation_task(), self.loop)
+
+    async def _reconciliation_task(self):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        self.after(0, lambda: self.btn_reconcile.configure(state='disabled', text="Abgleich läuft..."))
+        try:
+            stats = await ebay_upload.run_inventory_reconciliation(pool)
+            if "error" in stats:
+                self.after(0, lambda: messagebox.showerror("Fehler", f"Abgleich fehlgeschlagen: {stats['error']}"))
+            else:
+                msg = (f"Bestandsabgleich abgeschlossen!\n\n"
+                       f"DB (ebay_listed=true): {stats.get('total_db', 0)}\n"
+                       f"eBay (aktive Angebote): {stats.get('total_ebay', 0)}\n"
+                       f"Korrigiert: {stats.get('corrected', 0)}")
+                if stats.get('ebay_only', 0) > 0:
+                    msg += f"\n\n(Auf eBay aktiv aber lokal unlisted: {stats.get('ebay_only')})"
+                    
+                self.after(0, lambda: messagebox.showinfo("Erfolg", msg))
+                await self._refresh_task()
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Abgleich fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_reconcile.configure(state='normal', text="🔄 Bestandsabgleich"))
 
     def upload_selected(self):
         selected_items = self.tree.selection()
@@ -567,18 +699,20 @@ class BLBotApp(tb.Window):
         pool = await self._get_db_pool()
         if not pool: return
         
-        token = self.settings_vars["EBAY_USER_TOKEN"].get()
+        from ebay_token_manager import get_token
+        try:
+            token = get_token()
+        except RuntimeError as e:
+            logging.error(f"Token-Refresh fehlgeschlagen: {e}")
+            return
         env = self.settings_vars["EBAY_ENV"].get()
         base_url = "https://api.ebay.com" if env == "PRODUCTION" else "https://api.sandbox.ebay.com"
-        
-        if not token:
-            logging.error("Kein eBay User Token in den Settings gefunden!")
-            return
 
         try:
             fk_monat = Decimal(self.settings_vars["FIXKOSTEN_MONATLICH"].get().replace(',', '.'))
-            listings = int(self.settings_vars["ANZAHL_LISTINGS"].get())
+            expected_sales = int(self.settings_vars["ERWARTETE_VERKAEUFE"].get())
             marge_req = Decimal(self.settings_vars["MINDESTMARGE"].get().replace(',', '.'))
+            steuer_satz = Decimal(self.settings_vars["STEUERSATZ"].get().replace(',', '.'))
         except:
             logging.error("Ungültige Kalkulations-Parameter in den Settings!")
             return
@@ -613,8 +747,9 @@ class BLBotApp(tb.Window):
                             token=token,
                             base_url=base_url,
                             fixed_costs_monthly=fk_monat,
-                            total_listings=listings,
-                            min_margin_req=marge_req
+                            expected_sales=expected_sales,
+                            min_margin_req=marge_req,
+                            steuer_satz=steuer_satz
                         )
                         success_count += 1
                         

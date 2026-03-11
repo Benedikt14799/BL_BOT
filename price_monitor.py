@@ -110,7 +110,8 @@ async def check_and_sync_price(session: aiohttp.ClientSession, db_pool, book: di
 
 async def run_price_monitor(db_pool):
     """ Main loop for the price monitor. """
-    EBAY_USER_TOKEN = os.environ.get("EBAY_USER_TOKEN")
+    from ebay_token_manager import get_token
+    EBAY_USER_TOKEN = get_token()
     EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.sandbox.ebay.com")
     
     if not EBAY_USER_TOKEN:

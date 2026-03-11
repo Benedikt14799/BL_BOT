@@ -87,10 +87,11 @@ class PriceProcessing:
         token: Optional[str] = None,
         base_url: Optional[str] = None,
         fixed_costs_monthly: Decimal = Decimal('79.95'),
-        total_listings: int = 2500,
+        expected_sales: int = 200,
         min_margin_req: Decimal = Decimal('2.50'),
         addcost_low_mid: Decimal = Decimal('0.50'),
-        addcost_high: Decimal = Decimal('1.75')
+        addcost_high: Decimal = Decimal('1.75'),
+        steuer_satz: Decimal = Decimal('7.0')
     ) -> Optional[dict]:
         """
         Ermittelt final_price und Marge und speichert beides. 
@@ -137,7 +138,7 @@ class PriceProcessing:
                     factor = PriceProcessing._get_rarity_factor(ek_total, strategy)
                     final_price = PriceProcessing._round_x99_up(ek_total * factor)
                 else:
-                    final_price = PriceProcessing._compute_final_price(ek, bl_shipping, addcost_low_mid, addcost_high)
+                    final_price = PriceProcessing._compute_final_price(ek, bl_shipping, addcost_low_mid, addcost_high, steuer_satz, fixed_costs_monthly, expected_sales)
 
             if final_price is None:
                 raise ValueError("Finalpreis konnte nicht berechnet werden.")
@@ -148,10 +149,11 @@ class PriceProcessing:
                 bl_shipping=bl_shipping,
                 ebay_p=final_price,
                 monthly_fixed_costs=fixed_costs_monthly,
-                total_listings=total_listings,
+                expected_sales=expected_sales,
                 min_margin=min_margin_req,
                 addcost_low_mid=addcost_low_mid,
-                addcost_high=addcost_high
+                addcost_high=addcost_high,
+                steuer_satz=steuer_satz
             )
 
             # 5. Speichern in DB
@@ -274,7 +276,7 @@ class PriceProcessing:
         )
 
     @staticmethod
-    def _compute_final_price(ek: Decimal, bl_shipping: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> Optional[Decimal]:
+    def _compute_final_price(ek: Decimal, bl_shipping: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal, steuer_satz: Decimal = Decimal('7.0'), fixed_costs_monthly: Decimal = Decimal('79.95'), expected_sales: int = 200) -> Optional[Decimal]:
         """
         Bestimmt den kleinstmöglichen Endpreis p, der die Zielmarge erfüllt,
         wendet psychologisches Runden (x,99) an und prüft danach erneut die Marge.
@@ -284,12 +286,12 @@ class PriceProcessing:
             p_guess = (ek + bl_shipping + addcost_low_mid + Decimal('5.00'))
 
             # 2) Iterativ p lösen, da Zielmarge im Mid/High von p abhängt
-            p = PriceProcessing._solve_price(ek, bl_shipping, p_guess, addcost_low_mid, addcost_high)
+            p = PriceProcessing._solve_price(ek, bl_shipping, p_guess, addcost_low_mid, addcost_high, fixed_costs_monthly, expected_sales)
 
             # 3) Psychologisches Runden auf nächste x,99
             p = PriceProcessing._round_x99_up(p)
 
-            # SICHERHEITSNETZ: Verhindert Endlos-Schleife bei sehr teuren Büchern mit hohen Fixkosten 
+            # SICHERHEITSNETZ
             ek_total = ek + bl_shipping
             
             if ek_total <= Decimal('5.00'):
@@ -303,11 +305,11 @@ class PriceProcessing:
             else:
                 max_allowed_price = min(ek_total * Decimal('3.0'), Decimal('149.99'))
             
-            while not PriceProcessing._meets_margin(ek, bl_shipping, p, addcost_low_mid, addcost_high):
+            while not PriceProcessing._meets_margin(ek, bl_shipping, p, addcost_low_mid, addcost_high, steuer_satz, fixed_costs_monthly, expected_sales):
                 p = PriceProcessing._round_x99_up(p + Decimal('0.01'))
                 if p > max_allowed_price:
                     logger.warning(f"Preis-Obergrenze ({max_allowed_price}€) während Margen-Check bei EK {ek_total}€ erreicht. Breche Endlos-Schleife ab.")
-                    return max_allowed_price # Return capped price, which will fail calculate_profitability if margin is too low, marking as "Unrentabel"
+                    return max_allowed_price
                     
             return p.quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
         except Exception as e:
@@ -317,21 +319,22 @@ class PriceProcessing:
             return None
 
     @staticmethod
-    def _solve_price(ek: Decimal, bl_shipping: Decimal, p_init: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> Decimal:
+    def _solve_price(ek: Decimal, bl_shipping: Decimal, p_init: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal, fixed_costs_monthly: Decimal = Decimal('79.95'), expected_sales: int = 200) -> Decimal:
         """
         Löst p für die jeweilige Segmentregel. Es gibt drei Fälle:
-        - Low (feste Marge M): p >= (M + EK + Versand + AddCosts + fee_fixed) / (1 - fee_rate)
+        - Low (feste Marge M): p >= (M + EK + Versand + AddCosts + fee_fixed + fix_cost_per_item) / (1 - fee_rate)
         - Mid (max(3,60, 20% p)): prüfe beide und nimm die strengere
-        - High (30% p): p >= (EK + Versand + AddCosts + fee_fixed) / (1 - fee_rate - 0.30)
+        - High (30% p): p >= (EK + Versand + AddCosts + fee_fixed + fix_cost_per_item) / (1 - fee_rate - 0.30)
         Danach wird segmentabhängiger AdditionalCosts-Wert eingesetzt.
         """
         fee_rate = PriceProcessing.EBAY_PERCENTAGE_FEE
         fee_fixed = PriceProcessing.EBAY_FIXED_FEE
 
         p = p_init
+        fix_cost_per_item = fixed_costs_monthly / Decimal(str(expected_sales))
         for _ in range(100):  # Konvergenz-Obergrenze
             add_costs = PriceProcessing._additional_costs_for_price(p, addcost_low_mid, addcost_high)
-            base = ek + bl_shipping + add_costs + fee_fixed
+            base = ek + bl_shipping + add_costs + fee_fixed + fix_cost_per_item
 
             if p < PriceProcessing.PRICE_LOW_MAX:
                 # feste Marge
@@ -361,7 +364,7 @@ class PriceProcessing:
         return p
 
     @staticmethod
-    def _meets_margin(ek: Decimal, bl_shipping: Decimal, p: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal) -> bool:
+    def _meets_margin(ek: Decimal, bl_shipping: Decimal, p: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal, steuer_satz: Decimal = Decimal('7.0'), fixed_costs_monthly: Decimal = Decimal('79.95'), expected_sales: int = 200) -> bool:
         # Greift nun für die finale Überprüfung exakt auf calculate_profitability zu, 
         # um eine Drift zwischen Formeln (Fixkosten, Retourepuffer, Add Costs) auszuschließen.
         from decimal import Decimal
@@ -371,7 +374,10 @@ class PriceProcessing:
             ek, bl_shipping, p, 
             min_margin=target, # Wir übergeben die hier berechnete, dynamische Zielmarge
             addcost_low_mid=addcost_low_mid,
-            addcost_high=addcost_high
+            addcost_high=addcost_high,
+            steuer_satz=steuer_satz,
+            monthly_fixed_costs=fixed_costs_monthly,
+            expected_sales=expected_sales
         )
         return prof["rentabel"]
 
@@ -537,10 +543,11 @@ class PriceProcessing:
         bl_shipping: Decimal, 
         ebay_p: Decimal,
         monthly_fixed_costs: Decimal = Decimal('79.95'),
-        total_listings: int = 2500,
+        expected_sales: int = 200,
         min_margin: Decimal = Decimal('2.50'),
         addcost_low_mid: Decimal = Decimal('0.50'),
-        addcost_high: Decimal = Decimal('1.75')
+        addcost_high: Decimal = Decimal('1.75'),
+        steuer_satz: Decimal = Decimal('7.0')
     ) -> dict:
         """
         Berechnet die Profitabilität basierend auf den Vorgaben:
@@ -548,6 +555,7 @@ class PriceProcessing:
         - Fixkosten pro Listing
         - Mindestmarge
         - Retouren-Puffer v2 (2% vk + 2% Retourenkosten)
+        - Steuern (Umsatzsteuer minus Vorsteuer)
         """
         if ebay_p <= 0:
             return {"rentabel": False, "grund": "Verkaufspreis 0"}
@@ -557,9 +565,9 @@ class PriceProcessing:
         fee_fixed = PriceProcessing.EBAY_FIXED_FEE
         ebay_fees = (ebay_p * fee_rate) + fee_fixed
 
-        # 2. Fixkosten pro Listing
-        if total_listings <= 0: total_listings = 1
-        fix_cost_per_item = monthly_fixed_costs / Decimal(str(total_listings))
+        # 2. Fixkosten pro erwartetem Verkauf
+        if expected_sales <= 0: expected_sales = 1
+        fix_cost_per_item = monthly_fixed_costs / Decimal(str(expected_sales))
 
         # 2b. Add Costs (Verpackung, Etiketten etc.) - Dynamisch nach Preis
         add_costs = PriceProcessing._additional_costs_for_price(ebay_p, addcost_low_mid, addcost_high)
@@ -568,13 +576,19 @@ class PriceProcessing:
         # gewinn_brutto = vk - ebay_gebühr - (ek + versand_bl + fixanteil + additional_costs)
         gewinn_brutto = ebay_p - (ek + bl_shipping + ebay_fees + fix_cost_per_item + add_costs)
         
-        # 4. Retouren-Puffer (v2)
         from decimal import ROUND_HALF_UP
         retouren_quote = Decimal('0.02')
         retouren_kosten = Decimal('3.50')
         retouren_puffer = (ebay_p * retouren_quote) + (retouren_kosten * retouren_quote)
         
-        gewinn_real = gewinn_brutto - retouren_puffer
+        # 5. Steuern berechnen (Umsatzsteuer auf VK - Vorsteuer auf EK)
+        steuer_faktor = steuer_satz / Decimal('100.0')
+        umsatzsteuer = ebay_p - (ebay_p / (Decimal('1') + steuer_faktor))
+        vorsteuer = (ek + bl_shipping) - ((ek + bl_shipping) / (Decimal('1') + steuer_faktor))
+        steuer_last = umsatzsteuer - vorsteuer
+        if steuer_last < 0: steuer_last = Decimal('0') # Sicherheitshalber
+        
+        gewinn_real = gewinn_brutto - retouren_puffer - steuer_last
 
         needed_diff = min_margin - gewinn_real
         is_rentable = gewinn_real >= min_margin
@@ -584,10 +598,39 @@ class PriceProcessing:
             "marge": float(gewinn_real.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             "gewinn_brutto": float(gewinn_brutto.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             "retouren_puffer": float(retouren_puffer.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
+            "steuer_last": float(steuer_last.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             "fehlende_marge": float(max(Decimal('0'), needed_diff).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             "gebuehren": float(ebay_fees.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
             "fixkosten_pro_item": float(fix_cost_per_item.quantize(Decimal('0.001'), rounding=ROUND_HALF_UP))
         }
+
+    @staticmethod
+    def recheck_profitability(
+        ek: Decimal,
+        bl_shipping: Decimal,
+        current_ebay_price: Decimal,
+        monthly_fixed_costs: Decimal = Decimal('79.95'),
+        expected_sales: int = 200,
+        addcost_low_mid: Decimal = Decimal('0.50'),
+        addcost_high: Decimal = Decimal('1.75'),
+        steuer_satz: Decimal = Decimal('7.0')
+    ) -> dict:
+        """
+        Prüft einen bereits existierenden Artikel bei Bestands-Sync erneut auf Profitabilität
+        (z.B. nach Preiserhöhung auf Booklooker).
+        Ermittelt die dynamische Zielmarge basierend auf dem eBay-Preis.
+        """
+        target_margin = PriceProcessing._target_margin_for_price(current_ebay_price)
+        
+        return PriceProcessing.calculate_profitability(
+            ek, bl_shipping, current_ebay_price,
+            monthly_fixed_costs=monthly_fixed_costs,
+            expected_sales=expected_sales,
+            min_margin=target_margin,
+            addcost_low_mid=addcost_low_mid,
+            addcost_high=addcost_high,
+            steuer_satz=steuer_satz
+        )
 
 
     @staticmethod

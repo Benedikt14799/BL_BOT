@@ -1,2 +1,5 @@
 https://www.booklooker.de/B%C3%BCcher/Angebote/sparteID=739&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1
-https://www.booklooker.de/B%C3%BCcher/us/2902&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1=2&paymentMethods%5B6%5D=1
+https://www.booklooker.de/B%C3%BCcher/us/503&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1
+https://www.booklooker.de/B%C3%BCcher/us/2971&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1?setMediaType=0&page=1&recPerPage=50
+https://www.booklooker.de/B%C3%BCcher/us/857&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1?setMediaType=0&page=1&recPerPage=50
+https://www.booklooker.de/B%C3%BCcher/us/760&searchUserTyp=2&hasPic=on&exklusiv=on&zustand=2&paymentMethods%5B6%5D=1?setMediaType=0&page=1&recPerPage=50
