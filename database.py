@@ -1,4 +1,5 @@
 import logging
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -8,6 +9,29 @@ class DatabaseManager:
     ------------------------
     Verwaltet die Datenbankerstellung und das Einfügen neuer Scraping-Daten.
     """
+
+    @staticmethod
+    async def create_pool(db_url):
+        """Erstellt einen asyncpg-Pool für die Datenbankverbindung."""
+        import asyncpg
+        return await asyncpg.create_pool(
+            db_url,
+            min_size=2,
+            max_size=10,
+            command_timeout=60
+        )
+
+    @staticmethod
+    async def table_exists(conn, table_name):
+        """Prüft, ob eine Tabelle in der Datenbank existiert."""
+        row = await conn.fetchrow("""
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = $1
+            );
+        """, table_name)
+        return row['exists'] if row else False
 
     @staticmethod
     async def create_table(db_pool):
@@ -22,6 +46,7 @@ class DatabaseManager:
             """)
 
             # Tabelle für Links, die noch gescraped werden sollen
+            exists = await DatabaseManager.table_exists(conn, 'sitetoscrape')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS sitetoscrape (
                     id SERIAL PRIMARY KEY,
@@ -32,9 +57,13 @@ class DatabaseManager:
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
-            logger.info("Tabelle 'sitetoscrape' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'sitetoscrape' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'sitetoscrape' bereits vorhanden.")
 
             # Haupttabelle für die gescrapten Buchdaten
+            exists = await DatabaseManager.table_exists(conn, 'library')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS library (
                     id SERIAL PRIMARY KEY,
@@ -115,7 +144,10 @@ class DatabaseManager:
                     ebay_error TEXT
                 );
             """)
-            logger.info("Tabelle 'library' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'library' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'library' bereits vorhanden.")
 
             # Trigger um Custom_label_SKU synchron zu SKU zu halten
             try:
@@ -207,6 +239,7 @@ class DatabaseManager:
                 logger.error(f"Migration für eBay-Upload/Konkurrenzcheck fehlgeschlagen: {e}")
 
             # Neue Tabelle für Listings ohne gültige ISBN
+            exists = await DatabaseManager.table_exists(conn, 'missing_listings')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS missing_listings (
                     library_id   INTEGER PRIMARY KEY,
@@ -215,9 +248,13 @@ class DatabaseManager:
                     recorded_at  TIMESTAMP DEFAULT NOW()
                 );
             """)
-            logger.info("Tabelle 'missing_listings' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'missing_listings' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'missing_listings' bereits vorhanden.")
             
             # Neue Tabelle für unrentable Angebote
+            exists = await DatabaseManager.table_exists(conn, 'unprofitable_listings')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS unprofitable_listings (
                     library_id   INTEGER PRIMARY KEY,
@@ -228,9 +265,13 @@ class DatabaseManager:
                     recorded_at  TIMESTAMP DEFAULT NOW()
                 );
             """)
-            logger.info("Tabelle 'unprofitable_listings' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'unprofitable_listings' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'unprofitable_listings' bereits vorhanden.")
 
             # Neue Tabelle für den Sync-Dienst (verkaufte oder nicht mehr rentable Artikel)
+            exists = await DatabaseManager.table_exists(conn, 'sold_listings')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS sold_listings (
                     library_id   INTEGER PRIMARY KEY,
@@ -241,9 +282,13 @@ class DatabaseManager:
                     recorded_at  TIMESTAMP DEFAULT NOW()
                 );
             """)
-            logger.info("Tabelle 'sold_listings' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'sold_listings' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'sold_listings' bereits vorhanden.")
 
             # Neue Tabelle für das Arbitrage-Reporting
+            exists = await DatabaseManager.table_exists(conn, 'arbitrage_reporting')
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS arbitrage_reporting (
                     order_id         VARCHAR(100) PRIMARY KEY,
@@ -260,7 +305,10 @@ class DatabaseManager:
                     updated_at       TIMESTAMP DEFAULT NOW()
                 );
             """)
-            logger.info("Tabelle 'arbitrage_reporting' existiert nun oder wurde neu angelegt.")
+            if not exists:
+                logger.info("Tabelle 'arbitrage_reporting' wurde neu angelegt.")
+            else:
+                logger.debug("Tabelle 'arbitrage_reporting' bereits vorhanden.")
 
     @staticmethod
     async def insert_library_entry(db_pool, properties: dict):
@@ -379,6 +427,22 @@ class DatabaseManager:
             logger.info("Fremdschlüssel-Zuordnung abgeschlossen.")
         except Exception as e:
             logger.error(f"Fehler in set_foreignkey: {e}")
+
+    @staticmethod
+    async def delete_library_entries(db_pool, ids: list):
+        """
+        Löscht mehrere Einträge unwiderruflich aus der library Tabelle.
+        """
+        if not ids:
+            return
+        
+        async with db_pool.acquire() as conn:
+            try:
+                await conn.execute("DELETE FROM library WHERE id = ANY($1)", ids)
+                logger.info(f"{len(ids)} Einträge erfolgreich aus library gelöscht.")
+            except Exception as e:
+                logger.error(f"Fehler beim Löschen der Einträge: {e}")
+                raise e
 
     @staticmethod
     async def prefill_db_with_static_data(db_pool, category_name: str):

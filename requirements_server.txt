@@ -1,0 +1,16 @@
+aiohttp
+asyncpg
+apprise
+psutil
+python-dotenv
+beautifulsoup4
+requests
+lxml
+supabase
+postgrest
+httpx
+pydantic
+pydantic-settings
+python-telegram-bot
+# ebaysdk # Removed as it might be problematic or misnamed, using ebay-api if needed
+# ebay-ota # Removed as it's not on PyPI

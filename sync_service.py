@@ -6,6 +6,7 @@ import aiohttp
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from datetime import datetime, time, timedelta
+from decimal import Decimal
 
 # Eigene Module
 from database import DatabaseManager
@@ -70,7 +71,7 @@ async def fetch_bl_html(session: aiohttp.ClientSession, url: str) -> str:
         logger.error(f"Error fetching BL URL {url}: {e}")
         return ""
 
-async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, token: str, base_url: str, fixed_costs_monthly: Decimal, expected_sales: int, steuer_satz: Decimal):
+async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, token: str, base_url: str, fixed_costs_monthly: Decimal, expected_sales: int, steuer_satz: Decimal, addcost_low_mid: Decimal, addcost_high: Decimal):
     """Prüft ein einzelnes Item auf Preisänderungen oder Verkauf."""
     internal_id = item['id']
     bl_url = item.get('linktobl') or item.get('link')
@@ -98,24 +99,43 @@ async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, toke
         is_sold = True
 
     if is_sold:
-        logger.info(f"[{sku}] Verkauft auf BL! Beende eBay Angebot...")
-        success = await ebay_upload.withdraw_offer(session, sku, token, base_url)
-        if success or "API" not in str(success): # Assume true if API didn't hard-fail
-            await DatabaseManager.record_sold_listing(db_pool, internal_id, bl_url, sku, title, "sold_on_bl")
-            SyncState.sold_items_today += 1
+        # Verifizierung: 2 weitere Male prüfen mit Abstand
+        logger.warning(f"[{sku}] Möglicher Verkauf erkannt. Starte Verifizierung...")
+        really_sold = True
+        for i in range(2):
+            await asyncio.sleep(180) # 3 Minuten warten
+            html_retry = await fetch_bl_html(session, bl_url)
+            soup_retry = BeautifulSoup(html_retry, 'html.parser')
+            ek_retry = PriceProcessing._safe_clean_price(soup_retry)
+            
+            still_sold = False
+            if html_retry == "404_NOT_FOUND" or ek_retry == 0 or "Dieses Angebot ist nicht mehr verfügbar" in html_retry or soup_retry.find("input", {"value": "In den Warenkorb"}) is None:
+                still_sold = True
+            
+            if not still_sold:
+                logger.info(f"[{sku}] Verifizierung {i+1}/2: Fehlalarm! Artikel ist wieder da.")
+                really_sold = False
+                break
+            logger.info(f"[{sku}] Verifizierung {i+1}/2: Immer noch als verkauft erkannt.")
+
+        if really_sold:
+            logger.info(f"[{sku}] Definitiv verkauft auf BL! Beende eBay Angebot...")
+            success = await ebay_upload.withdraw_offer(session, sku, token, base_url)
+            if success:
+                await DatabaseManager.record_sold_listing(db_pool, internal_id, bl_url, sku, title, "sold_on_bl")
+                SyncState.sold_items_today += 1
         return
 
     # 2. Preis extrahieren
     new_shipping = PriceProcessing._safe_extract_shipping(soup)
     target_ebay_price = PriceProcessing._compute_final_price(
-        new_ek, new_shipping, Decimal('0.50'), Decimal('1.75'), 
+        new_ek, new_shipping, addcost_low_mid, addcost_high, 
         steuer_satz, fixed_costs_monthly, expected_sales
-    ) # Hardcoded AddCosts vorerst
+    )
 
     if target_ebay_price is None:
         return
 
-    from decimal import Decimal
     # Wenn sich der Preis um mehr als 0.01€ geändert hat:
     if abs(Decimal(str(target_ebay_price)) - current_ebay_price) > Decimal('0.01'):
         logger.info(f"[{sku}] Preisänderung erkannt: BL {new_ek}€ -> neuer eBay Zielpreis {target_ebay_price}€")
@@ -124,7 +144,7 @@ async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, toke
         prof = PriceProcessing.recheck_profitability(
             ek=new_ek, bl_shipping=new_shipping, current_ebay_price=target_ebay_price,
             monthly_fixed_costs=fixed_costs_monthly, expected_sales=expected_sales,
-            addcost_low_mid=Decimal('0.50'), addcost_high=Decimal('1.75'), steuer_satz=steuer_satz
+            addcost_low_mid=addcost_low_mid, addcost_high=addcost_high, steuer_satz=steuer_satz
         )
 
         if not prof['rentabel']:
@@ -150,23 +170,76 @@ async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, toke
     SyncState.items_processed_today += 1
 
 
+async def get_ebay_token_async(session: aiohttp.ClientSession):
+    """Refresht den eBay Token asynchron (vermeidet Blocking)."""
+    client_id = os.getenv("EBAY_CLIENT_ID")
+    client_secret = os.getenv("EBAY_CLIENT_SECRET")
+    refresh_token = os.getenv("EBAY_USER_TOKEN") or os.getenv("EBAY_REFRESH_TOKEN")
+    
+    if not client_id or not client_secret or not refresh_token:
+        logger.error(f"eBay OAuth Credentials unvollständig! (ID: {'ja' if client_id else 'missing'}, Secret: {'ja' if client_secret else 'missing'}, Token: {'ja' if refresh_token else 'missing'})")
+        return None
+
+    import base64
+    credentials = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    
+    url = "https://api.ebay.com/identity/v1/oauth2/token"
+    headers = {
+        "Authorization": f"Basic {credentials}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "scope": (
+            "https://api.ebay.com/oauth/api_scope "
+            "https://api.ebay.com/oauth/api_scope/sell.fulfillment "
+            "https://api.ebay.com/oauth/api_scope/sell.inventory "
+            "https://api.ebay.com/oauth/api_scope/sell.marketing"
+        )
+    }
+    
+    try:
+        async with session.post(url, headers=headers, data=data, timeout=15) as resp:
+            res_data = await resp.json()
+            if "access_token" in res_data:
+                logger.info("✅ eBay Access Token (async) erfolgreich erneuert.")
+                return res_data["access_token"]
+            else:
+                logger.error(f"Token Refresh fehlgeschlagen: {res_data}")
+                return None
+    except Exception as e:
+        logger.error(f"Fehler beim async Token-Refresh: {e}")
+        return None
+
+
 async def sync_loop(db_pool):
     """Die 24/7 Hauptschleife für den Abgleich."""
-    logger.info("Sync-Schleife gestartet.")
-    from ebay_token_manager import get_token
-    EBAY_USER_TOKEN = get_token()
-    EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.ebay.com")
+    print("DEBUG: sync_loop gestartet (stdout)")
+    logger.info("Sync-Schleife gestartet (logger).")
     
-    from decimal import Decimal
+    EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.ebay.com")
+    EBAY_USER_TOKEN = None
+    
     try:
-        fixed_costs_monthly = Decimal(os.environ.get("FIXKOSTEN_MONATLICH", "79.95").replace(',', '.'))
+        def to_decimal(val, default):
+            if not val: return Decimal(default)
+            return Decimal(str(val).replace(',', '.'))
+
+        fixed_costs_monthly = to_decimal(os.environ.get("FIXKOSTEN_MONATLICH"), "79.95")
         expected_sales = int(os.environ.get("ERWARTETE_VERKAEUFE", "200"))
-        steuer_satz = Decimal(os.environ.get("STEUERSATZ", "7.0").replace(',', '.'))
+        steuer_satz = to_decimal(os.environ.get("STEUERSATZ"), "7.0")
+        addcost_low_mid = to_decimal(os.environ.get("ZUSATZKOSTEN_LOW_MID"), "0.50")
+        addcost_high = to_decimal(os.environ.get("ZUSATZKOSTEN_HIGH"), "1.75")
+        logger.info(f"--- Konfiguration erfolgreich geladen ---")
+        logger.info(f"Fixkosten: {fixed_costs_monthly}€, Erwartete Sales: {expected_sales}, Steuer: {steuer_satz}%")
     except Exception as e:
-        logger.warning(f"Fehler beim Laden der Sync-Kosten-Umgebungsvariablen: {e}. Nutze Fallback.")
+        logger.warning(f"Fehler beim Laden der Sync-Kosten: {e}. Nutze Fallback.")
         fixed_costs_monthly = Decimal("79.95")
         expected_sales = 200
         steuer_satz = Decimal("7.0")
+        addcost_low_mid = Decimal("0.50")
+        addcost_high = Decimal("1.75")
 
     while True:
         if not SyncState.is_running:
@@ -174,12 +247,15 @@ async def sync_loop(db_pool):
             continue
             
         try:
+            logger.info("Frage Datenbank nach gelisteten Artikeln ab...")
             async with db_pool.acquire() as conn:
                 items = await conn.fetch("""
-                    SELECT id, title, start_price, sku, linktobl, link
+                    SELECT id, title, start_price, sku, linktobl
                     FROM library 
                     WHERE ebay_listed = TRUE
                 """)
+            
+            logger.info(f"Datenbank-Abfrage abgeschlossen: {len(items)} Artikel gefunden.")
 
             if not items:
                 logger.info("Keine gelisteten Artikel gefunden. Warte 10 Minuten...")
@@ -197,12 +273,19 @@ async def sync_loop(db_pool):
             logger.info(f"Starte Durchlauf für {len(items)} Artikel. Base Delay: {base_delay:.2f}s")
             
             async with aiohttp.ClientSession() as session:
+                # Token hier asynchron holen
+                EBAY_USER_TOKEN = await get_ebay_token_async(session)
+                if not EBAY_USER_TOKEN:
+                    logger.error("Kein eBay Token verfügbar. Überspringe Durchlauf.")
+                    await asyncio.sleep(60)
+                    continue
+
                 for idx, record in enumerate(items):
                     if not SyncState.is_running:
                         logger.info("Sync pausiert.")
                         break
 
-                    await process_item(dict(record), db_pool, session, EBAY_USER_TOKEN, EBAY_BASE_URL, fixed_costs_monthly, expected_sales, steuer_satz)
+                    await process_item(dict(record), db_pool, session, EBAY_USER_TOKEN, EBAY_BASE_URL, fixed_costs_monthly, expected_sales, steuer_satz, addcost_low_mid, addcost_high)
                     
                     # Anti-Blocking Jitter: +/- 30% vom base_delay
                     jitter = random.uniform(-0.3, 0.3) * base_delay
@@ -286,12 +369,17 @@ async def evening_report_loop(bot):
             logger.error(f"Fehler beim Senden des Abend-Reports: {e}")
 
 async def main():
+    print("DEBUG: main() gestartet (stdout)")
+    logger.info("Sync-Service Hauptprozess startet (logger).")
+    
     db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         logger.error("DATABASE_URL fehlt!")
         return
 
+    print("DEBUG: Erstelle DB-Pool...")
     pool = await DatabaseManager.create_pool(db_url)
+    print("DEBUG: DB-Pool erstellt.")
     
     # Starte Sync im Hintergrund
     asyncio.create_task(sync_loop(pool))

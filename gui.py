@@ -273,13 +273,13 @@ class BLBotApp(tb.Window):
         self.btn_upload = tb.Button(controls, text="Ausgewählte Hochladen", bootstyle=PRIMARY, command=self.upload_selected)
         self.btn_upload.pack(side=LEFT, padx=5)
 
-        self.btn_comp_check = tb.Button(controls, text="Konkurrenzcheck starten", bootstyle=WARNING, command=self.start_competitor_check)
-        self.btn_comp_check.pack(side=LEFT, padx=5)
-
         tb.Separator(controls, orient=VERTICAL).pack(side=LEFT, fill=Y, padx=10)
 
         self.btn_reconcile = tb.Button(controls, text="🔄 Bestandsabgleich", bootstyle=SECONDARY, command=self.start_reconciliation)
         self.btn_reconcile.pack(side=LEFT, padx=5)
+
+        self.btn_delete = tb.Button(controls, text="🗑️ Ausgewählte Löschen", bootstyle=DANGER, command=self.delete_selected)
+        self.btn_delete.pack(side=LEFT, padx=5)
         
         columns = ("id", "title", "author", "price", "isbn")
         self.tree = tb.Treeview(self.tab_upload, columns=columns, show="headings", bootstyle=INFO, selectmode='extended')
@@ -573,6 +573,27 @@ class BLBotApp(tb.Window):
         finally:
             self.after(0, lambda: self.btn_reconcile.configure(state='normal', text="🔄 Bestandsabgleich"))
 
+    def delete_selected(self):
+        selected_items = self.tree.selection()
+        if not selected_items:
+            messagebox.showwarning("Warnung", "Bitte wähle mindestens ein Buch aus der Liste aus.")
+            return
+        
+        ids = [int(self.tree.item(item)['values'][0]) for item in selected_items]
+        if messagebox.askyesno("Confirm", f"Möchtest du {len(ids)} Bücher wirklich unwiderruflich aus der Datenbank löschen?"):
+            asyncio.run_coroutine_threadsafe(self._delete_task(ids), self.loop)
+
+    async def _delete_task(self, ids):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        try:
+            await DatabaseManager.delete_library_entries(pool, ids)
+            self.after(0, lambda: messagebox.showinfo("Erfolg", f"{len(ids)} Einträge wurden gelöscht."))
+            await self._refresh_task()
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Löschen fehlgeschlagen: {e}"))
+
     def upload_selected(self):
         selected_items = self.tree.selection()
         if not selected_items:
@@ -685,92 +706,6 @@ class BLBotApp(tb.Window):
         finally:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
 
-    def start_competitor_check(self):
-        selected_items = self.tree.selection()
-        if not selected_items:
-            messagebox.showwarning("Warnung", "Bitte wähle mindestens ein Buch aus.")
-            return
-        
-        ids = [self.tree.item(item)['values'][0] for item in selected_items]
-        logging.info(f"Starte Konkurrenzcheck für {len(ids)} Bücher...")
-        asyncio.run_coroutine_threadsafe(self._competitor_check_task(ids), self.loop)
-
-    async def _competitor_check_task(self, ids):
-        pool = await self._get_db_pool()
-        if not pool: return
-        
-        from ebay_token_manager import get_token
-        try:
-            token = get_token()
-        except RuntimeError as e:
-            logging.error(f"Token-Refresh fehlgeschlagen: {e}")
-            return
-        env = self.settings_vars["EBAY_ENV"].get()
-        base_url = "https://api.ebay.com" if env == "PRODUCTION" else "https://api.sandbox.ebay.com"
-
-        try:
-            fk_monat = Decimal(self.settings_vars["FIXKOSTEN_MONATLICH"].get().replace(',', '.'))
-            expected_sales = int(self.settings_vars["ERWARTETE_VERKAEUFE"].get())
-            marge_req = Decimal(self.settings_vars["MINDESTMARGE"].get().replace(',', '.'))
-            steuer_satz = Decimal(self.settings_vars["STEUERSATZ"].get().replace(',', '.'))
-        except:
-            logging.error("Ungültige Kalkulations-Parameter in den Settings!")
-            return
-
-        self.after(0, lambda: self.btn_comp_check.configure(state='disabled', text="Checking..."))
-        
-        success_count = 0
-        rentable_count = 0
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                for internal_id in ids:
-                    try:
-                        async with pool.acquire() as conn:
-                            row = await conn.fetchrow("SELECT LinkToBL FROM library WHERE id = $1", int(internal_id))
-                            if not row: continue
-                            bl_url = row['linktobl']
-
-                        async with session.get(bl_url) as resp:
-                            if resp.status != 200:
-                                logging.error(f"Konnte BL-URL nicht laden: {bl_url}")
-                                continue
-                            html = await resp.text()
-                            soup = BeautifulSoup(html, "html.parser")
-
-                        # Call get_price which handles ISBN extraction and competitor API calls
-                        await price_processing.PriceProcessing.get_price(
-                            session=session,
-                            soup=soup,
-                            num=int(internal_id),
-                            db_pool=pool,
-                            token=token,
-                            base_url=base_url,
-                            fixed_costs_monthly=fk_monat,
-                            expected_sales=expected_sales,
-                            min_margin_req=marge_req,
-                            steuer_satz=steuer_satz
-                        )
-                        success_count += 1
-                        
-                        async with pool.acquire() as conn:
-                            rentabel = await conn.fetchval("SELECT rentabel FROM library WHERE id = $1", int(internal_id))
-                            if rentabel: rentable_count += 1
-
-                    except Exception as e:
-                        logging.error(f"Fehler bei ID {internal_id}: {e}")
-
-            logging.info(f"Konkurrenzcheck beendet. {success_count} geprüft, {rentable_count} rentabel.")
-            self.after(0, lambda: messagebox.showinfo("Check beendet", 
-                f"Konkurrenzcheck für {success_count} Bücher abgeschlossen.\n\n"
-                f"✅ Rentabel: {rentable_count}\n"
-                f"❌ Nicht rentabel: {success_count - rentable_count}\n\n"
-                f"Details siehe Live-Logs."))
-            
-            await self._refresh_task()
-
-        finally:
-            self.after(0, lambda: self.btn_comp_check.configure(state='normal', text="Konkurrenzcheck starten"))
 
 if __name__ == "__main__":
     app = BLBotApp()

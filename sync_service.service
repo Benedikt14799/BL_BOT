@@ -1,0 +1,18 @@
+[Unit]
+Description=BL_BOT Background Sync Service
+After=network.target
+
+[Service]
+# HINWEIS: Einen System-User 'blbot' anlegen: sudo adduser --system --group --home /home/blbot blbot
+User=blbot
+Group=blbot
+WorkingDirectory=/home/blbot/n8nbot
+ExecStart=/home/blbot/n8nbot/.venv/bin/python sync_service.py
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=bl-bot-sync
+
+[Install]
+WantedBy=multi-user.target
