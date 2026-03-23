@@ -361,25 +361,92 @@ async def main():
     pool = await DatabaseManager.create_pool(db_url)
 
     # Tabellen-Migration ausführen (stellt sicher, dass last_checked existiert)
-    await DatabaseManager.create_table(pool)
-
-    # Kostenparameter laden
+# ─── Kostenparameter Helfer ───────────────────────────────────────
+def _get_cost_params() -> dict:
+    """Lädt Kostenparameter aus Umgebungsvariablen."""
     def to_dec(val, default):
         if not val:
             return Decimal(default)
         return Decimal(str(val).replace(",", "."))
 
-    cost_params = {
+    return {
         "fixed_costs": to_dec(os.getenv("FIXKOSTEN_MONATLICH"), "79.95"),
         "expected_sales": int(os.getenv("ERWARTETE_VERKAEUFE", "200")),
         "steuer_satz": to_dec(os.getenv("STEUERSATZ"), "7.0"),
         "addcost_low_mid": to_dec(os.getenv("ZUSATZKOSTEN_LOW_MID"), "0.50"),
         "addcost_high": to_dec(os.getenv("ZUSATZKOSTEN_HIGH"), "1.75"),
     }
+
+
+# ─── Hauptlauf ────────────────────────────────────────────────────
+
+async def worker(
+    queue: asyncio.Queue,
+    db_pool,
+    session: aiohttp.ClientSession,
+    base_url: str,
+    cost_params: dict,
+    stats: dict,
+    total_count: int,
+    processed_count: list
+):
+    """Holt Items aus der Queue und verarbeitet sie."""
+    while True:
+        record = await queue.get()
+        try:
+            # Token bei jedem Item auffrischen (EbayTokenManager sorgt für Effizienz)
+            token = get_token()
+            
+            result = await process_item(
+                dict(record), db_pool, session, token, base_url, cost_params
+            )
+            action = result.get("action", "unknown")
+            
+            # Statistiken sicher aktualisieren
+            stats[action] = stats.get(action, 0) + 1
+            processed_count[0] += 1
+            
+            # Fortschritt alle 25 Artikel loggen
+            if processed_count[0] % 25 == 0 or processed_count[0] == total_count:
+                logger.info(f"Fortschritt: {processed_count[0]}/{total_count}")
+
+            # Anti-Blocking Delay pro Worker mit Jitter
+            jitter_val = random.uniform(-JITTER, JITTER) * BASE_DELAY
+            delay = max(5.0, BASE_DELAY + jitter_val)
+            await asyncio.sleep(delay)
+            
+        except Exception as e:
+            logger.error(f"Worker Fehler bei Verarbeitung von {record.get('sku')}: {e}")
+        finally:
+            queue.task_done()
+
+
+async def main():
+    """Einmal-Durchlauf: Alle eBay-gelisteten Artikel prüfen."""
+    logger.info("=" * 60)
+    logger.info("BookLooker ↔ eBay Bestandsabgleich gestartet (PARALLEL)")
+    logger.info("=" * 60)
+
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        logger.error("DATABASE_URL fehlt! Abbruch.")
+        return
+
+    pool = await DatabaseManager.create_pool(db_url)
+    if not pool:
+        logger.error("Datenbank-Pool konnte nicht erstellt werden.")
+        return
+
+    # Tabellen-Migration ausführen (stellt sicher, dass last_checked existiert)
+    await DatabaseManager.create_table(pool)
+
+    # Kostenparameter laden
+    cost_params = _get_cost_params()
     logger.info(f"Kostenparameter: {cost_params}")
 
     EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
-    token = None
+    MAX_WORKERS = int(os.getenv("MAX_SYNC_WORKERS", "5"))
+    logger.info(f"Parallelisierung: {MAX_WORKERS} Worker.")
 
     async with aiohttp.ClientSession() as session:
         # Alle gelisteten Artikel laden
@@ -403,36 +470,32 @@ async def main():
 
         # Statistiken
         stats = {
-            "unchanged": 0,
-            "price_updated": 0,
-            "sold": 0,
-            "unprofitable": 0,
-            "skipped": 0,
-            "network_error": 0,
-            "calc_error": 0,
-            "ebay_error": 0,
-            "vacation_paused": 0,
-            "db_initialized": 0,
+            "unchanged": 0, "price_updated": 0, "sold": 0, "unprofitable": 0,
+            "skipped": 0, "network_error": 0, "calc_error": 0, "ebay_error": 0,
+            "vacation_paused": 0, "db_initialized": 0,
         }
+        processed_count = [0] # Liste als Mutable Container für Worker
 
-        for idx, record in enumerate(items):
-            # Token auffrischen, falls er während des langen Laufs abgelaufen ist (>2h)
-            token = get_token()
+        # Queue befüllen
+        queue = asyncio.Queue()
+        for record in items:
+            await queue.put(record)
 
-            result = await process_item(
-                dict(record), pool, session, token, EBAY_BASE_URL, cost_params
+        # Worker starten
+        tasks = []
+        for i in range(MAX_WORKERS):
+            task = asyncio.create_task(
+                worker(queue, pool, session, EBAY_BASE_URL, cost_params, stats, total, processed_count)
             )
-            action = result.get("action", "unknown")
-            stats[action] = stats.get(action, 0) + 1
+            tasks.append(task)
 
-            # Fortschritt loggen
-            if (idx + 1) % 25 == 0 or (idx + 1) == total:
-                logger.info(f"Fortschritt: {idx+1}/{total}")
+        # Warten bis Queue leer ist
+        await queue.join()
 
-            # Anti-Blocking Delay mit Jitter
-            jitter_val = random.uniform(-JITTER, JITTER) * BASE_DELAY
-            delay = max(5.0, BASE_DELAY + jitter_val)
-            await asyncio.sleep(delay)
+        # Worker stoppen
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     await pool.close()
 

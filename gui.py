@@ -365,7 +365,8 @@ class BLBotApp(tb.Window):
             "ZUSATZKOSTEN_HIGH": tk.StringVar(value="1.75"),
             "SHIPPING_DESCRIPTION_EBAY": tk.StringVar(value="Standardversand"),
             "DELIVERY_TIME_EBAY": tk.StringVar(value="1-3 Werktage"),
-            "BL_URL_SUFFIX": tk.StringVar()
+            "BL_URL_SUFFIX": tk.StringVar(),
+            "MAX_SYNC_WORKERS": tk.StringVar(value="5")
         }
         
         container = tb.Frame(self.tab_settings, padding=20)
@@ -409,9 +410,10 @@ class BLBotApp(tb.Window):
         self._add_setting_row(right_frame, "eBay Versandinfo:", "SHIPPING_DESCRIPTION_EBAY", row=4, tooltip_text="Standard Versandprofil-Text für eBay (z.B. 'Standardversand' oder 'Büchersendung').")
         self._add_setting_row(right_frame, "eBay Lieferzeit:", "DELIVERY_TIME_EBAY", row=5, tooltip_text="Information zur Lieferzeit, die bei eBay als Textbaustein mitübergeben werden soll.")
         self._add_setting_row(right_frame, "BL Link Suffix:", "BL_URL_SUFFIX", row=6, tooltip_text="Anhängsel für Booklooker Links (z.B. &searchUserTyp=2&hasPic=on...), wird automatisch an jeden Link im Scraper angehängt.")
+        self._add_setting_row(right_frame, "Parallele Sync-Worker:", "MAX_SYNC_WORKERS", row=7, tooltip_text="Wie viele Bücher GLEICHZEITIG geprüft werden sollen. Empfohlen: 5. Ein höherer Wert ist schneller, birgt aber Risiko für Sperren.")
         
         lbl_required = tb.Label(right_frame, text="* Pflichtfelder", font=("Helvetica", 8), bootstyle="danger")
-        lbl_required.grid(row=6, column=1, sticky=E, pady=(10, 0))
+        lbl_required.grid(row=8, column=1, sticky=E, pady=(10, 0))
 
         # Configure column weights for frames
         left_frame.columnconfigure(1, weight=1)
