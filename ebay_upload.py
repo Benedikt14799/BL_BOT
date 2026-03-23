@@ -704,9 +704,16 @@ async def end_item_by_id(session: aiohttp.ClientSession, listing_id: str, token:
     try:
         async with session.post(trading_url, headers=headers, data=xml_payload) as resp:
             text = await resp.text()
-            if resp.status == 200 and ("<Ack>Success</Ack>" in text or "<Ack>Warning</Ack>" in text):
-                logger.info(f"Angebot {listing_id} über Trading API erfolgreich beendet.")
-                return True
+            if resp.status == 200:
+                if "<Ack>Success</Ack>" in text or "<Ack>Warning</Ack>" in text:
+                    logger.info(f"Angebot {listing_id} über Trading API erfolgreich beendet.")
+                    return True
+                
+                # Spezialfall: Angebot bereits beendet (ErrorCode 1047)
+                if "<ErrorCode>1047</ErrorCode>" in text:
+                    logger.info(f"Angebot {listing_id} war auf eBay bereits beendet (Fehler 1047). Behandele als Erfolg.")
+                    return True
+
             logger.error(f"Trading API EndItem Fehler für {listing_id}: {text}")
             return False
     except Exception as e:
