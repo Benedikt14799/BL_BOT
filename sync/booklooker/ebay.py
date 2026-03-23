@@ -379,14 +379,7 @@ async def main():
     logger.info(f"Kostenparameter: {cost_params}")
 
     EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
-
-    # eBay Token holen (synchron, über den bewährten Token-Manager)
-    try:
-        token = get_token()
-    except RuntimeError as e:
-        logger.error(f"Kein eBay Token verfügbar: {e}")
-        await pool.close()
-        return
+    token = None
 
     async with aiohttp.ClientSession() as session:
         # Alle gelisteten Artikel laden
@@ -423,6 +416,9 @@ async def main():
         }
 
         for idx, record in enumerate(items):
+            # Token auffrischen, falls er während des langen Laufs abgelaufen ist (>2h)
+            token = get_token()
+
             result = await process_item(
                 dict(record), pool, session, token, EBAY_BASE_URL, cost_params
             )
