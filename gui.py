@@ -20,6 +20,7 @@ import scrape
 # import price_monitor  <- Entfernt, da durch sync_service ersetzt
 import price_processing
 import ebay_analytics
+from sync.booklooker import reactivate_vacation, ebay as sync_ebay
 
 # --- Redirect logging to GUI ---
 class TextHandler(logging.Handler):
@@ -178,8 +179,15 @@ class BLBotApp(tb.Window):
         self.btn_start = tb.Button(controls, text="Scraping Starten", bootstyle=SUCCESS, command=self.start_scraping)
         self.btn_start.pack(side=LEFT, padx=10)
 
-        self.btn_start = tb.Button(controls, text="Scraping Starten", bootstyle=SUCCESS, command=self.start_scraping)
-        self.btn_start.pack(side=LEFT, padx=10)
+        self.btn_vacation = tb.Button(controls, text="🏖️ Urlaubs-Reaktivierung", bootstyle=INFO, command=self.start_vacation_reactivation)
+        self.btn_vacation.pack(side=LEFT, padx=10)
+        ToolTip(self.btn_vacation, text="Prüft pausierte Bücher und stellt sie wieder ein, wenn der Anbieter zurück ist.", bootstyle=INFO, delay=100)
+
+        self.btn_sync = tb.Button(controls, text="🔄 Bestands- & Preis-Sync", bootstyle=PRIMARY, command=self.start_price_sync)
+        self.btn_sync.pack(side=LEFT, padx=10)
+        ToolTip(self.btn_sync, text="Gleicht alle eBay-Angebote mit BookLooker ab (Preise, Verkäufe, Urlaub).", bootstyle=INFO, delay=100)
+
+
 
         # Rate Limit Section
         rl_frame = tb.Labelframe(self.tab_dashboard, text="eBay API Rate Limit", padding=15)
@@ -694,7 +702,8 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: self.btn_upload.configure(state='normal', text="Ausgewählte Hochladen"))
 
     def sync_prices(self):
-        messagebox.showinfo("Info", "Die manuelle Preis-Überwachung wurde in den 'sync_service' ausgelagert, der im Hintergrund läuft.")
+        self.start_price_sync()
+
 
     def toggle_auto_sync(self):
         messagebox.showinfo("Info", "Der Auto-Sync wird nun über den systemd/background Dienst gesteuert.")
@@ -738,6 +747,49 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: messagebox.showerror("Fehler", f"Scraping fehlgeschlagen: {e}"))
         finally:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
+
+    def start_vacation_reactivation(self):
+        if hasattr(self, 'vacation_task') and self.vacation_task and not self.vacation_task.done():
+            messagebox.showinfo("Info", "Die Reaktivierung läuft bereits.")
+            return
+
+        self.btn_vacation.configure(state='disabled', text="⌛ Prüfe Urlaub...")
+        self.vacation_task = asyncio.run_coroutine_threadsafe(self._vacation_reactivation_task(), self.loop)
+
+    async def _vacation_reactivation_task(self):
+        try:
+            logging.info("Urlaubs-Reaktivierung gestartet...")
+            # Wir rufen direkt die main() aus dem reactivate_vacation Modul auf
+            # Da diese main() bereits logging macht, sehen wir es in der GUI
+            await reactivate_vacation.main()
+            
+            self.after(0, lambda: messagebox.showinfo("Erfolg", "Urlaubs-Reaktivierung abgeschlossen. Prüfe die Logs für Details."))
+        except Exception as e:
+            logging.error(f"Fehler bei Reaktivierung: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Reaktivierung fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_vacation.configure(state='normal', text="🏖️ Urlaubs-Reaktivierung"))
+
+    def start_price_sync(self):
+        if hasattr(self, 'sync_task') and self.sync_task and not self.sync_task.done():
+            messagebox.showinfo("Info", "Der Preis-Sync läuft bereits.")
+            return
+
+        self.btn_sync.configure(state='disabled', text="⌛ Synchronisiere...")
+        self.sync_task = asyncio.run_coroutine_threadsafe(self._price_sync_task(), self.loop)
+
+    async def _price_sync_task(self):
+        try:
+            logging.info("Bestands- & Preis-Sync gestartet...")
+            # Wir rufen direkt die main() aus dem sync.booklooker.ebay Modul auf
+            await sync_ebay.main()
+            
+            self.after(0, lambda: messagebox.showinfo("Erfolg", "Synchronisation abgeschlossen. Details findest du in den Logs."))
+        except Exception as e:
+            logging.error(f"Fehler bei Synchronisation: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Sync fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_sync.configure(state='normal', text="🔄 Bestands- & Preis-Sync"))
 
 
 if __name__ == "__main__":

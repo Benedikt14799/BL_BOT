@@ -230,11 +230,25 @@ class PriceProcessing:
     def _safe_clean_price(soup) -> Decimal:
         try:
             import re
-            text = soup.find(class_="priceValue").text
-            cleaned = re.sub(r'[^\d,]', '', text).replace(',', '.')
-            return Decimal(cleaned)
-        except Exception:
-            logger.warning("Preis-Parsing fehlgeschlagen, setze auf 0.00")
+            raw_text = soup.find(class_="priceValue").text
+            # 1. Alles in Klammern entfernen (oft NP oder ehem. Preise)
+            text_no_parens = re.sub(r'\(.*?\)', '', raw_text)
+            
+            # 2. Den ersten validen Preis im Format XX,XX oder XX.XX finden
+            match = re.search(r'(\d+[\.,]\d{2})', text_no_parens)
+            
+            if match:
+                cleaned = match.group(1).replace(',', '.')
+                return Decimal(cleaned)
+            
+            # Fallback: Falls die Suche oben fehlschlägt, den alten groben Ansatz nehmen
+            cleaned_fallback = re.sub(r'[^\d,]', '', text_no_parens).replace(',', '.')
+            if cleaned_fallback:
+                return Decimal(cleaned_fallback)
+            
+            return Decimal('0.00')
+        except Exception as e:
+            logger.warning(f"Preis-Parsing fehlgeschlagen: {e} | Text: {locals().get('raw_text', 'unknown')}")
             return Decimal('0.00')
 
 

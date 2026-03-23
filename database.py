@@ -232,7 +232,8 @@ class DatabaseManager:
                     ADD COLUMN IF NOT EXISTS signiert_von VARCHAR(255),
                     ADD COLUMN IF NOT EXISTS literarische_bewegung TEXT,
                     ADD COLUMN IF NOT EXISTS ausgabe TEXT,
-                    ADD COLUMN IF NOT EXISTS ebay_delisted_reason TEXT;
+                    ADD COLUMN IF NOT EXISTS ebay_delisted_reason TEXT,
+                    ADD COLUMN IF NOT EXISTS last_checked TIMESTAMP;
                 """)
                 logger.info("Migration: Struktur von library für eBay-Upload und Konkurrenzcheck v2 aktualisiert.")
             except Exception as e:

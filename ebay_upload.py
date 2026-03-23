@@ -643,3 +643,72 @@ async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, b
     except Exception as e:
         logger.error(f"Error in withdraw_offer for SKU {sku}: {e}")
         return False
+
+
+# ─── Trading API (XML) Hilfsfunktionen für ItemID-basierte Updates ───
+
+async def revise_item_price_by_id(session: aiohttp.ClientSession, listing_id: str, new_price: float, token: str) -> bool:
+    """
+    Passt den Preis eines Artikels über die ItemID (Trading API) an.
+    Nutzt ReviseInventoryStatus – spezialisiert auf Preis/Menge Updates.
+    """
+    trading_url = "https://api.ebay.com/ws/api.dll"
+    headers = {
+        "X-EBAY-API-CALL-NAME": "ReviseInventoryStatus",
+        "X-EBAY-API-SITEID": "77",  # Deutschland
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "1191",
+        "X-EBAY-API-IAF-TOKEN": f"Bearer {token}",
+        "Content-Type": "text/xml"
+    }
+    
+    xml_payload = f"""<?xml version="1.0" encoding="utf-8"?>
+    <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+      <InventoryStatus>
+        <ItemID>{listing_id}</ItemID>
+        <StartPrice currencyID="EUR">{new_price}</StartPrice>
+      </InventoryStatus>
+    </ReviseInventoryStatusRequest>"""
+    
+    try:
+        async with session.post(trading_url, headers=headers, data=xml_payload) as resp:
+            text = await resp.text()
+            if resp.status == 200 and ("<Ack>Success</Ack>" in text or "<Ack>Warning</Ack>" in text):
+                logger.info(f"Preis für ID {listing_id} über ReviseInventoryStatus auf {new_price}€ aktualisiert.")
+                return True
+            logger.error(f"Trading API ReviseInventoryStatus Fehler für {listing_id}: {text}")
+            return False
+    except Exception as e:
+        logger.error(f"Kritischer Fehler bei ReviseInventoryStatus für {listing_id}: {e}")
+        return False
+
+
+async def end_item_by_id(session: aiohttp.ClientSession, listing_id: str, token: str) -> bool:
+    """
+    Beendet ein Angebot über die ItemID (Trading API).
+    """
+    trading_url = "https://api.ebay.com/ws/api.dll"
+    headers = {
+        "X-EBAY-API-CALL-NAME": "EndItem",
+        "X-EBAY-API-SITEID": "77",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "1191",
+        "X-EBAY-API-IAF-TOKEN": f"Bearer {token}",
+        "Content-Type": "text/xml"
+    }
+    
+    xml_payload = f"""<?xml version="1.0" encoding="utf-8"?>
+    <EndItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+      <ItemID>{listing_id}</ItemID>
+      <EndingReason>NotAvailable</EndingReason>
+    </EndItemRequest>"""
+    
+    try:
+        async with session.post(trading_url, headers=headers, data=xml_payload) as resp:
+            text = await resp.text()
+            if resp.status == 200 and ("<Ack>Success</Ack>" in text or "<Ack>Warning</Ack>" in text):
+                logger.info(f"Angebot {listing_id} über Trading API erfolgreich beendet.")
+                return True
+            logger.error(f"Trading API EndItem Fehler für {listing_id}: {text}")
+            return False
+    except Exception as e:
+        logger.error(f"Kritischer Fehler bei EndItem für {listing_id}: {e}")
+        return False

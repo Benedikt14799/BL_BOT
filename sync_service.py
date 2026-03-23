@@ -95,8 +95,13 @@ async def process_item(item: dict, db_pool, session: aiohttp.ClientSession, toke
     is_sold = False
     if html == "404_NOT_FOUND" or new_ek == 0:
         is_sold = True
-    elif "Dieses Angebot ist nicht mehr verfügbar" in html or soup.find("input", {"value": "In den Warenkorb"}) is None:
+    elif "Dieses Angebot ist nicht mehr verfügbar" in html:
         is_sold = True
+    else:
+        # Case-insensitive Suche nach dem Warenkorb-Button
+        cart_button = soup.find("input", value=lambda v: v and "warenkorb" in v.lower())
+        if cart_button is None:
+            is_sold = True
 
     if is_sold:
         # Verifizierung: 2 weitere Male prüfen mit Abstand
