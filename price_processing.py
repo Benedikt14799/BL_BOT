@@ -137,6 +137,34 @@ class PriceProcessing:
                 if strategy in ("Seltenheits-Bonus", "Monopol-Stellung"):
                     factor = PriceProcessing._get_rarity_factor(ek_total, strategy)
                     final_price = PriceProcessing._round_x99_up(ek_total * factor)
+                    
+                    # NEU: Markt-Validierung (Anti-Utopie-Check)
+                    median_preis = comp_data.get("median_preis")
+                    if median_preis and median_preis > 0:
+                        median_p_decimal = Decimal(str(median_preis))
+                        if final_price > median_p_decimal * Decimal('1.5'):
+                            # Preis ist unrealistisch hoch vs. Markt. Prüfe ob Marktpreis profitabel ist.
+                            target_margin_at_market = PriceProcessing._target_margin_for_price(median_p_decimal)
+                            prof_at_market = PriceProcessing.calculate_profitability(
+                                ek=ek,
+                                bl_shipping=bl_shipping,
+                                ebay_p=median_p_decimal,
+                                monthly_fixed_costs=fixed_costs_monthly,
+                                expected_sales=expected_sales,
+                                min_margin=target_margin_at_market,
+                                addcost_low_mid=addcost_low_mid,
+                                addcost_high=addcost_high,
+                                steuer_satz=steuer_satz
+                            )
+                            
+                            if prof_at_market['rentabel']:
+                                # Profitabel zum Marktpreis -> Preis auf Markt-Standard senken
+                                final_price = PriceProcessing._round_x99_up(median_p_decimal * Decimal('0.99'))
+                                logger.info(f"[{num}] Markt-Validierung: Preis gesenkt auf {final_price}€ (Median: {median_preis}€)")
+                            else:
+                                # Nicht profitabel -> NICHT listen
+                                logger.warning(f"[{num}] Markt-Validierung: Überspringe (Unrealistisch). Berechnet: {final_price}€, Median: {median_preis}€, Marge bei Median: {prof_at_market['marge']}€")
+                                return None
                 else:
                     final_price = PriceProcessing._compute_final_price(ek, bl_shipping, addcost_low_mid, addcost_high, steuer_satz, fixed_costs_monthly, expected_sales)
 

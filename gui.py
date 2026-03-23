@@ -17,7 +17,7 @@ from bs4 import BeautifulSoup
 from database import DatabaseManager
 import ebay_upload
 import scrape
-import price_monitor
+# import price_monitor  <- Entfernt, da durch sync_service ersetzt
 import price_processing
 import ebay_analytics
 
@@ -178,11 +178,8 @@ class BLBotApp(tb.Window):
         self.btn_start = tb.Button(controls, text="Scraping Starten", bootstyle=SUCCESS, command=self.start_scraping)
         self.btn_start.pack(side=LEFT, padx=10)
 
-        self.btn_sync = tb.Button(controls, text="Preis-Sync Jetzt", bootstyle=INFO, command=self.sync_prices)
-        self.btn_sync.pack(side=LEFT, padx=10)
-
-        self.btn_auto_sync = tb.Button(controls, text="Auto-Sync: AUS", bootstyle=(SECONDARY, OUTLINE), command=self.toggle_auto_sync)
-        self.btn_auto_sync.pack(side=LEFT, padx=10)
+        self.btn_start = tb.Button(controls, text="Scraping Starten", bootstyle=SUCCESS, command=self.start_scraping)
+        self.btn_start.pack(side=LEFT, padx=10)
 
         # Rate Limit Section
         rl_frame = tb.Labelframe(self.tab_dashboard, text="eBay API Rate Limit", padding=15)
@@ -273,11 +270,6 @@ class BLBotApp(tb.Window):
         self.btn_upload = tb.Button(controls, text="Ausgewählte Hochladen", bootstyle=PRIMARY, command=self.upload_selected)
         self.btn_upload.pack(side=LEFT, padx=5)
 
-        tb.Separator(controls, orient=VERTICAL).pack(side=LEFT, fill=Y, padx=10)
-
-        self.btn_reconcile = tb.Button(controls, text="🔄 Bestandsabgleich", bootstyle=SECONDARY, command=self.start_reconciliation)
-        self.btn_reconcile.pack(side=LEFT, padx=5)
-
         self.btn_delete = tb.Button(controls, text="🗑️ Ausgewählte Löschen", bootstyle=DANGER, command=self.delete_selected)
         self.btn_delete.pack(side=LEFT, padx=5)
         
@@ -295,14 +287,57 @@ class BLBotApp(tb.Window):
         self.tree.pack(fill=BOTH, expand=True, padx=10, pady=5)
         
     def _build_links_tab(self):
-        lbl = tb.Label(self.tab_links, text="Zu scrapende Booklooker-URLs (eine pro Zeile):")
-        lbl.pack(anchor=W, padx=10, pady=10)
+        # Top: New Links Input
+        new_links_frame = tb.Labelframe(self.tab_links, text="Neue Booklooker-URLs hinzufügen", padding=15)
+        new_links_frame.pack(fill=X, padx=10, pady=10)
         
-        self.links_text = tb.Text(self.tab_links, wrap='none', height=20)
-        self.links_text.pack(fill=BOTH, expand=True, padx=10)
+        lbl_hint = tb.Label(new_links_frame, text="Eine URL pro Zeile. Suffix wird automatisch ergänzt (siehe Settings).", font=("Helvetica", 8, "italic"))
+        lbl_hint.pack(anchor=W, pady=(0, 5))
+
+        self.links_text = tb.Text(new_links_frame, wrap='none', height=8)
+        self.links_text.pack(fill=X, expand=True)
         
-        btn_save = tb.Button(self.tab_links, text="Links Speichern", bootstyle=SUCCESS, command=self.save_links)
-        btn_save.pack(pady=10)
+        btn_add = tb.Button(new_links_frame, text="➕ Links zur Warteschlange hinzufügen", bootstyle=SUCCESS, command=self.add_new_links)
+        btn_add.pack(pady=10)
+        
+        # Bottom: History (Collapsible)
+        self.history_visible = tk.BooleanVar(value=False)
+        history_frame = tb.Frame(self.tab_links, padding=10)
+        history_frame.pack(fill=BOTH, expand=True)
+        
+        # Collapse Header
+        header_frame = tb.Frame(history_frame)
+        header_frame.pack(fill=X)
+        
+        self.btn_toggle_history = tb.Button(header_frame, text="▶ Link-Verlauf anzeigen (Datenbank)", bootstyle=(SECONDARY, OUTLINE), command=self.toggle_history)
+        self.btn_toggle_history.pack(side=LEFT)
+        
+        self.btn_refresh_history = tb.Button(header_frame, text="🔄", bootstyle=INFO, command=self.refresh_history_table)
+        # Initially hidden until history is toggled
+        
+        self.history_container = tb.Frame(history_frame, padding=(0, 10))
+        # Container will be packed/unpacked by toggle_history
+        
+        # Treeview for sitetoscrape
+        columns = ("id", "link", "pages", "books", "status")
+        self.tree_history = tb.Treeview(self.history_container, columns=columns, show="headings", bootstyle=INFO, height=10)
+        self.tree_history.heading("id", text="ID")
+        self.tree_history.column("id", width=50, stretch=False)
+        self.tree_history.heading("link", text="Basis-Link")
+        self.tree_history.column("link", width=400)
+        self.tree_history.heading("pages", text="Seiten")
+        self.tree_history.column("pages", width=60, anchor=CENTER)
+        self.tree_history.heading("books", text="Bücher")
+        self.tree_history.column("books", width=80, anchor=CENTER)
+        self.tree_history.heading("status", text="Status")
+        self.tree_history.column("status", width=100, anchor=CENTER)
+        
+        self.tree_history.pack(fill=BOTH, expand=True)
+        
+        # Scrollbar for history
+        sb_h = tb.Scrollbar(self.tree_history, orient=VERTICAL, command=self.tree_history.yview)
+        sb_h.pack(side=RIGHT, fill=Y)
+        self.tree_history.configure(yscrollcommand=sb_h.set)
         
     def _build_settings_tab(self):
         self.settings_vars = {
@@ -321,7 +356,8 @@ class BLBotApp(tb.Window):
             "ZUSATZKOSTEN_LOW_MID": tk.StringVar(value="0.50"),
             "ZUSATZKOSTEN_HIGH": tk.StringVar(value="1.75"),
             "SHIPPING_DESCRIPTION_EBAY": tk.StringVar(value="Standardversand"),
-            "DELIVERY_TIME_EBAY": tk.StringVar(value="1-3 Werktage")
+            "DELIVERY_TIME_EBAY": tk.StringVar(value="1-3 Werktage"),
+            "BL_URL_SUFFIX": tk.StringVar()
         }
         
         container = tb.Frame(self.tab_settings, padding=20)
@@ -364,6 +400,7 @@ class BLBotApp(tb.Window):
         self._add_setting_row(right_frame, "Zusatzkosten (Buch >30€):", "ZUSATZKOSTEN_HIGH", row=3, tooltip_text="Pauschalbetrag für hochwertigere Pakete/Polster für wertvolle Sammlerstücke / Lexikons.")
         self._add_setting_row(right_frame, "eBay Versandinfo:", "SHIPPING_DESCRIPTION_EBAY", row=4, tooltip_text="Standard Versandprofil-Text für eBay (z.B. 'Standardversand' oder 'Büchersendung').")
         self._add_setting_row(right_frame, "eBay Lieferzeit:", "DELIVERY_TIME_EBAY", row=5, tooltip_text="Information zur Lieferzeit, die bei eBay als Textbaustein mitübergeben werden soll.")
+        self._add_setting_row(right_frame, "BL Link Suffix:", "BL_URL_SUFFIX", row=6, tooltip_text="Anhängsel für Booklooker Links (z.B. &searchUserTyp=2&hasPic=on...), wird automatisch an jeden Link im Scraper angehängt.")
         
         lbl_required = tb.Label(right_frame, text="* Pflichtfelder", font=("Helvetica", 8), bootstyle="danger")
         lbl_required.grid(row=6, column=1, sticky=E, pady=(10, 0))
@@ -495,15 +532,80 @@ class BLBotApp(tb.Window):
             
         messagebox.showinfo("Erfolg", "Einstellungen wurden in der .env aktualisiert.")
 
+    def add_new_links(self):
+        """Processes links from text area, adds them to DB, and clears the area."""
+        content = self.links_text.get(1.0, tk.END).strip()
+        links = [l.strip() for l in content.split('\n') if l.strip()]
+        
+        if not links:
+            messagebox.showwarning("Warnung", "Keine Links zum Hinzufügen gefunden.")
+            return
+            
+        def run():
+            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._add_links_task(links)))
+        
+        threading.Thread(target=run, daemon=True).start()
+
+    async def _add_links_task(self, links):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        try:
+            await scrape.insert_links_into_sitetoscrape(links, pool)
+            self.after(0, lambda: self.links_text.delete(1.0, tk.END))
+            self.after(0, lambda: messagebox.showinfo("Erfolg", f"{len(links)} Links wurden zur Warteschlange hinzugefügt."))
+            self.after(0, self.refresh_history_table)
+        except Exception as e:
+            logging.error(f"Fehler beim Hinzufügen der Links: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Konnte Links nicht hinzufügen: {e}"))
+
+    def toggle_history(self):
+        if self.history_visible.get():
+            self.history_visible.set(False)
+            self.history_container.pack_forget()
+            self.btn_refresh_history.pack_forget()
+            self.btn_toggle_history.configure(text="▶ Link-Verlauf anzeigen (Datenbank)")
+        else:
+            self.history_visible.set(True)
+            self.history_container.pack(fill=BOTH, expand=True)
+            self.btn_refresh_history.pack(side=LEFT, padx=10)
+            self.btn_toggle_history.configure(text="▼ Link-Verlauf ausblenden")
+            self.refresh_history_table()
+
+    def refresh_history_table(self):
+        if not self.history_visible.get(): return
+        asyncio.run_coroutine_threadsafe(self._refresh_history_task(), self.loop)
+
+    async def _refresh_history_task(self):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        try:
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("""
+                    SELECT id, link, anzahlSeiten, numbersOfBooks, 
+                           CASE WHEN is_scraped THEN 'Gescrapt' ELSE 'Wartend' END as status
+                    FROM sitetoscrape 
+                    ORDER BY id DESC LIMIT 50
+                """)
+                
+                def update_ui():
+                    for item in self.tree_history.get_children():
+                        self.tree_history.delete(item)
+                    for r in rows:
+                        self.tree_history.insert("", tk.END, values=(
+                            r["id"], r["link"], r["anzahlseiten"], r["numbersofbooks"], r["status"]
+                        ))
+                
+                self.after(0, update_ui)
+        except Exception as e:
+            logging.error(f"Fehler beim Laden des Verlaufs: {e}")
+
     def _load_links(self):
-        if os.path.exists(self.links_path):
-            with open(self.links_path, "r", encoding="utf-8") as f:
-                self.links_text.insert(tk.END, f.read())
+        pass
 
     def save_links(self):
-        with open(self.links_path, "w", encoding="utf-8") as f:
-            f.write(self.links_text.get(1.0, tk.END).strip())
-        messagebox.showinfo("Erfolg", "Links wurden gespeichert.")
+        pass
 
     def select_all(self):
         for item in self.tree.get_children():
@@ -545,33 +647,6 @@ class BLBotApp(tb.Window):
             logging.error(f"Error refreshing table: {e}")
             self.after(0, lambda: messagebox.showerror("Fehler", f"Fehler beim Laden der Daten: {e}"))
 
-    def start_reconciliation(self):
-        if messagebox.askyesno("Confirm", "Möchtest du einen Abgleich mit eBay durchführen? Dies kann einen Moment dauern."):
-            asyncio.run_coroutine_threadsafe(self._reconciliation_task(), self.loop)
-
-    async def _reconciliation_task(self):
-        pool = await self._get_db_pool()
-        if not pool: return
-        
-        self.after(0, lambda: self.btn_reconcile.configure(state='disabled', text="Abgleich läuft..."))
-        try:
-            stats = await ebay_upload.run_inventory_reconciliation(pool)
-            if "error" in stats:
-                self.after(0, lambda: messagebox.showerror("Fehler", f"Abgleich fehlgeschlagen: {stats['error']}"))
-            else:
-                msg = (f"Bestandsabgleich abgeschlossen!\n\n"
-                       f"DB (ebay_listed=true): {stats.get('total_db', 0)}\n"
-                       f"eBay (aktive Angebote): {stats.get('total_ebay', 0)}\n"
-                       f"Korrigiert: {stats.get('corrected', 0)}")
-                if stats.get('ebay_only', 0) > 0:
-                    msg += f"\n\n(Auf eBay aktiv aber lokal unlisted: {stats.get('ebay_only')})"
-                    
-                self.after(0, lambda: messagebox.showinfo("Erfolg", msg))
-                await self._refresh_task()
-        except Exception as e:
-            self.after(0, lambda: messagebox.showerror("Fehler", f"Abgleich fehlgeschlagen: {e}"))
-        finally:
-            self.after(0, lambda: self.btn_reconcile.configure(state='normal', text="🔄 Bestandsabgleich"))
 
     def delete_selected(self):
         selected_items = self.tree.selection()
@@ -619,52 +694,10 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: self.btn_upload.configure(state='normal', text="Ausgewählte Hochladen"))
 
     def sync_prices(self):
-        """Manually trigger the price monitoring sync."""
-        def run():
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._sync_task_async()))
-        
-        threading.Thread(target=run, daemon=True).start()
-
-    async def _sync_task_async(self):
-        pool = await self._get_db_pool()
-        if not pool: return
-        
-        self.btn_sync.configure(state='disabled', text="Sync läuft...")
-        try:
-            logging.info("Manueller Preis-Sync gestartet...")
-            await price_monitor.run_price_monitor(pool)
-            logging.info("Preis-Sync abgeschlossen.")
-        except Exception as e:
-            logging.error(f"Fehler beim Preis-Sync: {e}")
-        finally:
-            self.after(0, lambda: self.btn_sync.configure(state='normal', text="Preis-Sync Jetzt"))
+        messagebox.showinfo("Info", "Die manuelle Preis-Überwachung wurde in den 'sync_service' ausgelagert, der im Hintergrund läuft.")
 
     def toggle_auto_sync(self):
-        """Toggles the background auto-sync loop."""
-        if self.auto_sync_active:
-            self.auto_sync_active = False
-            self.btn_auto_sync.configure(text="Auto-Sync: AUS", bootstyle=(SECONDARY, OUTLINE))
-            logging.info("Auto-Sync deaktiviert.")
-        else:
-            self.auto_sync_active = True
-            self.btn_auto_sync.configure(text="Auto-Sync: EIN", bootstyle=SUCCESS)
-            logging.info("Auto-Sync aktiviert (Intervall: 4 Std.).")
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self._auto_sync_loop()))
-
-    async def _auto_sync_loop(self):
-        """Background loop that periodically runs the price sync."""
-        interval = 4 * 3600 # 4 Hours
-        
-        while self.auto_sync_active:
-            try:
-                await self._sync_task_async()
-            except Exception as e:
-                logging.error(f"Fehler im Auto-Sync Loop: {e}")
-            
-            for _ in range(interval // 10): 
-                if not self.auto_sync_active:
-                    break
-                await asyncio.sleep(10)
+        messagebox.showinfo("Info", "Der Auto-Sync wird nun über den systemd/background Dienst gesteuert.")
 
     def start_scraping(self):
         if self.scrape_task and not self.scrape_task.done():

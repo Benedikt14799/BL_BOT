@@ -125,16 +125,32 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
             return None
 
 
-async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
-    """
-    Fügt neue Basis-Links in sitetoscrape ein (nur wenn noch nicht vorhanden).
-    """
+    # Suffix aus Umgebungsvariablen laden
+    import os
+    suffix = os.getenv("BL_URL_SUFFIX", "").strip()
+    
+    processed_links = []
+    for l in links_to_scrape:
+        cleaned_link = l.strip()
+        if not cleaned_link:
+            continue
+        
+        # Suffix nur anhängen, wenn es nicht bereits im Link vorkommt
+        if suffix and suffix not in cleaned_link:
+            # Trenner wählen: ? wenn noch keine Parameter da sind, sonst &
+            separator = "&" if "?" in cleaned_link else "?"
+            # Das erste Zeichen des Suffixes (meist & oder ?) entfernen, falls der Trenner schon da ist
+            clean_suffix = suffix.lstrip("&?")
+            cleaned_link = f"{cleaned_link}{separator}{clean_suffix}"
+            
+        processed_links.append(cleaned_link)
+
     async with db_pool.acquire() as conn:
         existing = {r["link"] for r in await conn.fetch("SELECT link FROM sitetoscrape;")}
 
-    new_links = [l for l in links_to_scrape if l not in existing]
+    new_links = [l for l in processed_links if l not in existing]
     if not new_links:
-        logger.info("Keine neuen Links in sitetoscrape.")
+        logger.info("Keine neuen Links in sitetoscrape (nach Suffix-Check).")
         return
 
     async with aiohttp.ClientSession() as session:
