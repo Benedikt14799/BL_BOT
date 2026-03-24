@@ -3,7 +3,7 @@ from tkinter import ttk, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 from ttkbootstrap.widgets import ToolTip
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv, set_key, find_dotenv
 import os
 import threading
 import sys
@@ -21,6 +21,7 @@ import scrape
 import price_processing
 import ebay_analytics
 from sync.booklooker import reactivate_vacation, ebay as sync_ebay
+from sync import ebay_inventory_check
 
 # --- Redirect logging to GUI ---
 class TextHandler(logging.Handler):
@@ -186,6 +187,10 @@ class BLBotApp(tb.Window):
         self.btn_sync = tb.Button(controls, text="🔄 Bestands- & Preis-Sync", bootstyle=PRIMARY, command=self.start_price_sync)
         self.btn_sync.pack(side=LEFT, padx=10)
         ToolTip(self.btn_sync, text="Gleicht alle eBay-Angebote mit BookLooker ab (Preise, Verkäufe, Urlaub).", bootstyle=INFO, delay=100)
+
+        self.btn_inventory_sync = tb.Button(controls, text="📦 Bestandsabgleich (eBay)", bootstyle=WARNING, command=self.start_inventory_sync)
+        self.btn_inventory_sync.pack(side=LEFT, padx=10)
+        ToolTip(self.btn_inventory_sync, text="Gleicht den eBay-Bestand mit der DB ab. Löscht Einträge in DB, die auf eBay nicht mehr existieren.", bootstyle=INFO, delay=100)
 
 
 
@@ -511,7 +516,7 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: messagebox.showerror("Fehler", "Verbindung zur Datenbank fehlgeschlagen. Details in den Logs."))
 
     def _load_settings(self):
-        load_dotenv(self.env_path)
+        load_dotenv(self.env_path, override=True)
         for key, var in self.settings_vars.items():
             val = os.environ.get(key, "")
             var.set(val)
@@ -736,7 +741,10 @@ class BLBotApp(tb.Window):
             
             if links:
                 await scrape.insert_links_into_sitetoscrape(links, pool)
-                await scrape.scrape_and_save_pages(pool)
+            
+            # Immer prüfen, ob es noch un-gescrapte Seiten in sitetoscrape gibt 
+            # (auch die von vorherigen Sessions)
+            await scrape.scrape_and_save_pages(pool)
             
             await scrape.perform_webscrape_async(pool)
             
@@ -745,8 +753,9 @@ class BLBotApp(tb.Window):
         except asyncio.CancelledError:
             logging.warning("Scraping wurde vom Benutzer abgebrochen.")
         except Exception as e:
-            logging.error(f"Scraping Error: {e}")
-            self.after(0, lambda: messagebox.showerror("Fehler", f"Scraping fehlgeschlagen: {e}"))
+            err_msg = str(e)
+            logging.error(f"Scraping Error: {err_msg}")
+            self.after(0, lambda msg=err_msg: messagebox.showerror("Fehler", f"Scraping fehlgeschlagen: {msg}"))
         finally:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
 
@@ -792,6 +801,31 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: messagebox.showerror("Fehler", f"Sync fehlgeschlagen: {e}"))
         finally:
             self.after(0, lambda: self.btn_sync.configure(state='normal', text="🔄 Bestands- & Preis-Sync"))
+
+    def start_inventory_sync(self):
+        if hasattr(self, 'inv_sync_task') and self.inv_sync_task and not self.inv_sync_task.done():
+            messagebox.showinfo("Info", "Der Bestandsabgleich läuft bereits.")
+            return
+
+        self.btn_inventory_sync.configure(state='disabled', text="⌛ Abgleich läuft...")
+        self.inv_sync_task = asyncio.run_coroutine_threadsafe(self._inventory_sync_task(), self.loop)
+
+    async def _inventory_sync_task(self):
+        try:
+            pool = await self._get_db_pool()
+            if not pool: return
+
+            logging.info("eBay Bestandsabgleich gestartet...")
+            # Wir rufen die Haupt-Logik auf
+            res = await ebay_inventory_check.run_inventory_sync(pool)
+            
+            msg = f"Bestandsabgleich abgeschlossen.\n- Geprüft: {res['total_checked']}\n- Bereinigt: {res['removed']}\n- Orphans: {res['orphans']}"
+            self.after(0, lambda m=msg: messagebox.showinfo("Erfolg", m))
+        except Exception as e:
+            logging.error(f"Fehler bei Bestandsabgleich: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Abgleich fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_inventory_sync.configure(state='normal', text="📦 Bestandsabgleich (eBay)"))
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 
-dnb_xml_semaphore = asyncio.Semaphore(5)
+dnb_xml_semaphore = asyncio.Semaphore(10)
 
 # Regex zum Finden von ISBN-13 bzw. ISBN-10 in beliebigem Text
 ISBN13_RE = re.compile(r"\b97[89]\d{10}\b")

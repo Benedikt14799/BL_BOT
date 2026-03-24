@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 import asyncio
 
-dnb_semaphore = asyncio.Semaphore(5)
+dnb_semaphore = asyncio.Semaphore(10)
 
 class PictureProcessing:
     async def get_pictures_with_dnb(
@@ -89,6 +89,18 @@ class PictureProcessing:
                     src_xxl = _to_xxl(src)
                     picture_links.append(src_xxl)
                     logger.info(f"[{num}] Fallback currentImage (XXL): {src_xxl}")
+
+        # Letzter Fallback: Suche nach JEDEM Bild von images.booklooker.de, das verdächtig aussieht (u/ oder x/)
+        if not picture_links:
+            all_imgs = soup.find_all("img")
+            for img in all_imgs:
+                src = img.get("src", "").strip()
+                if "images.booklooker.de" in src and ("/u/" in src or "/x/" in src or "/ut" in src or "/xt" in src):
+                    src_xxl = _to_xxl(src)
+                    if src_xxl not in picture_links:
+                        picture_links.append(src_xxl)
+                        logger.info(f"[{num}] Ultimate Fallback Booklooker-Logo/Photo (XXL): {src_xxl}")
+                        break # Nur eines nehmen, wenn wir raten
 
         # 3) String bauen und in DB speichern (Zusätzliche Sicherheit)
         picture_links = list(dict.fromkeys(picture_links))

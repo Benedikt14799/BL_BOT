@@ -94,7 +94,8 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
                        signiert_von, literarische_bewegung, ausgabe, ebay_error,
                        COALESCE(ebay_status, 'pending') as ebay_status
                 FROM library 
-                WHERE (ebay_listed IS FALSE OR ebay_listed IS NULL)
+                WHERE status_id = 1
+                  AND (ebay_listed IS FALSE OR ebay_listed IS NULL)
                   AND (ebay_status IS NULL OR ebay_status != 'listed')
                   AND isbn IS NOT NULL 
                   AND LENGTH(isbn) > 5
@@ -389,7 +390,10 @@ async def mark_as_listed(db_pool, internal_id: int, listing_id: str):
     async with db_pool.acquire() as conn:
         await conn.execute("""
             UPDATE library 
-            SET ebay_listed = TRUE, ebay_listing_id = $1, ebay_error = NULL
+            SET ebay_listed = TRUE, 
+                ebay_listing_id = $1, 
+                ebay_error = NULL,
+                status_id = 4
             WHERE id = $2
         """, listing_id, internal_id)
 

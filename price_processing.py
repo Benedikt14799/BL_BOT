@@ -33,18 +33,18 @@ class PriceProcessing:
     DECIMAL_PLACES = Decimal('0.01')
 
     # Segmentschwellen auf Basis des finalen Endpreises p
-    PRICE_LOW_MAX  = Decimal('12.00')
-    PRICE_MID_MAX  = Decimal('30.00')
+    PRICE_LOW_MAX  = Decimal('15.00')
+    PRICE_MID_MAX  = Decimal('40.00')
 
     # Zielmargen-Parameter
-    LOW_MIN_ABS_MARGIN      = Decimal('2.50')   # p < 12
-    MID_MIN_ABS_MARGIN      = Decimal('3.60')   # Untergrenze im Mid-Segment
-    MID_MIN_REL_MARGIN      = Decimal('0.20')   # 20% von p
-    HIGH_MIN_REL_MARGIN     = Decimal('0.30')   # 30% von p
+    LOW_MIN_ABS_MARGIN      = Decimal('1.50')   # p < 15
+    MID_MIN_ABS_MARGIN      = Decimal('2.00')   # Untergrenze im Mid-Segment
+    MID_MIN_REL_MARGIN      = Decimal('0.15')   # 15% von p
+    HIGH_MIN_REL_MARGIN     = Decimal('0.15')   # 15% von p
 
-    # AdditionalCosts je Segment
-    ADDCOST_LOW_MID = Decimal('0.50')
-    ADDCOST_HIGH    = Decimal('1.75')
+    # AdditionalCosts je Segment (vom User auf 0 gesetzt)
+    ADDCOST_LOW_MID = Decimal('0.00')
+    ADDCOST_HIGH    = Decimal('0.00')
 
     # eBay Browse API Settings
     EBAY_MARKETPLACE_ID = "EBAY_DE"
@@ -88,9 +88,9 @@ class PriceProcessing:
         base_url: Optional[str] = None,
         fixed_costs_monthly: Decimal = Decimal('79.95'),
         expected_sales: int = 200,
-        min_margin_req: Decimal = Decimal('2.50'),
-        addcost_low_mid: Decimal = Decimal('0.50'),
-        addcost_high: Decimal = Decimal('1.75'),
+        min_margin_req: Decimal = Decimal('1.50'),
+        addcost_low_mid: Decimal = Decimal('0.00'),
+        addcost_high: Decimal = Decimal('0.00'),
         steuer_satz: Decimal = Decimal('7.0')
     ) -> Optional[dict]:
         """
@@ -140,31 +140,41 @@ class PriceProcessing:
                     
                     # NEU: Markt-Validierung (Anti-Utopie-Check)
                     median_preis = comp_data.get("median_preis")
-                    if median_preis and median_preis > 0:
+                    if median_preis and median_preis >= 6.00: # Dynamische Schwelle: ignoriere Median < 6€
                         median_p_decimal = Decimal(str(median_preis))
-                        if final_price > median_p_decimal * Decimal('1.5'):
-                            # Preis ist unrealistisch hoch vs. Markt. Prüfe ob Marktpreis profitabel ist.
-                            target_margin_at_market = PriceProcessing._target_margin_for_price(median_p_decimal)
-                            prof_at_market = PriceProcessing.calculate_profitability(
+                        
+                        # Plausibilitätscheck: Wenn Median > 8x EK, vermutlich Mondpreise auf Markt
+                        if median_p_decimal > ek_total * Decimal('8.0'):
+                            logger.info(f"[{num}] Markt plausibel verzerrt (Median {median_preis}€ > 8x EK {ek_total}€). Nutze Seltenheits-Faktor.")
+                        elif final_price > median_p_decimal * Decimal('1.5'):
+                            # Preis ist zu hoch vs. Markt. Median-Cap Logik:
+                            test_price = (median_p_decimal * Decimal('1.5')).quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
+                            logger.info(f"[{num}] Preis {final_price}€ > 1.5x Median ({median_p_decimal}€). Teste Median-Cap bei {test_price}€.")
+                            
+                            target_margin_at_cap = PriceProcessing._target_margin_for_price(test_price)
+                            prof_at_cap = PriceProcessing.calculate_profitability(
                                 ek=ek,
                                 bl_shipping=bl_shipping,
-                                ebay_p=median_p_decimal,
+                                ebay_p=test_price,
                                 monthly_fixed_costs=fixed_costs_monthly,
                                 expected_sales=expected_sales,
-                                min_margin=target_margin_at_market,
+                                min_margin=target_margin_at_cap,
                                 addcost_low_mid=addcost_low_mid,
                                 addcost_high=addcost_high,
                                 steuer_satz=steuer_satz
                             )
                             
-                            if prof_at_market['rentabel']:
-                                # Profitabel zum Marktpreis -> Preis auf Markt-Standard senken
-                                final_price = PriceProcessing._round_x99_up(median_p_decimal * Decimal('0.99'))
-                                logger.info(f"[{num}] Markt-Validierung: Preis gesenkt auf {final_price}€ (Median: {median_preis}€)")
+                            if prof_at_cap['rentabel']:
+                                # Profitabel zum Cap-Preis -> Preis deckeln
+                                final_price = PriceProcessing._round_x99_up(test_price * Decimal('0.99'))
+                                logger.info(f"[{num}] Median-Cap: Preis erfolgreich auf {final_price}€ gedeckelt.")
                             else:
-                                # Nicht profitabel -> NICHT listen
-                                logger.warning(f"[{num}] Markt-Validierung: Überspringe (Unrealistisch). Berechnet: {final_price}€, Median: {median_preis}€, Marge bei Median: {prof_at_market['marge']}€")
-                                return None
+                                # Auch mit Cap nicht profitabel -> Konsequent markieren
+                                logger.warning(f"[{num}] Markt-Validierung: Unrealistisch & auch mit Cap nicht rentabel. Median: {median_preis}€.")
+                                return {"rentabel": False, "error_type": "unrealistic_price"}
+                    else:
+                        if median_preis and median_preis < 6.00:
+                            logger.info(f"[{num}] Median {median_preis}€ < 6€: Anti-Utopie-Check übersprungen.")
                 else:
                     final_price = PriceProcessing._compute_final_price(ek, bl_shipping, addcost_low_mid, addcost_high, steuer_satz, fixed_costs_monthly, expected_sales)
 
@@ -228,9 +238,14 @@ class PriceProcessing:
 
     @staticmethod
     def _safe_clean_price(soup) -> Decimal:
+        if not soup: return Decimal('0.00')
         try:
             import re
-            raw_text = soup.find(class_="priceValue").text
+            price_elem = soup.find(class_="priceValue")
+            if not price_elem:
+                return Decimal('0.00')
+                
+            raw_text = price_elem.text
             # 1. Alles in Klammern entfernen (oft NP oder ehem. Preise)
             text_no_parens = re.sub(r'\(.*?\)', '', raw_text)
             
@@ -247,20 +262,23 @@ class PriceProcessing:
                 return Decimal(cleaned_fallback)
             
             return Decimal('0.00')
-        except Exception as e:
-            logger.warning(f"Preis-Parsing fehlgeschlagen: {e} | Text: {locals().get('raw_text', 'unknown')}")
+        except Exception:
             return Decimal('0.00')
 
 
     @staticmethod
     def _safe_extract_shipping(soup) -> Decimal:
+        if not soup: return Decimal('0.00')
         try:
             import re
-            text = soup.find(class_="shippingCosts").text
+            ship_elem = soup.find(class_="shippingCosts")
+            if not ship_elem:
+                return Decimal('0.00')
+                
+            text = ship_elem.text
             match = re.search(r'([\d,]+)', text)
             return Decimal(match.group(1).replace(',', '.')) if match else Decimal('0.00')
         except Exception:
-            logger.warning("Versandkosten-Parsing fehlgeschlagen, setze auf 0.00")
             return Decimal('0.00')
 
     @staticmethod
@@ -304,15 +322,15 @@ class PriceProcessing:
         Ermittelt die Zielmarge M(p) gem. Staffel auf Basis des (aktuellen) Preises p.
         """
         if p < PriceProcessing.PRICE_LOW_MAX:
-            return PriceProcessing.LOW_MIN_ABS_MARGIN
+                return PriceProcessing.LOW_MIN_ABS_MARGIN
         if p < PriceProcessing.PRICE_MID_MAX:
-            # max(3,60 €, 20% von p)
+            # max(2,00 €, 15% von p)
             abs_req = PriceProcessing.MID_MIN_ABS_MARGIN
             rel_req = (p * PriceProcessing.MID_MIN_REL_MARGIN).quantize(
                 PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP
             )
             return abs_req if abs_req >= rel_req else rel_req
-        # p ≥ 30 -> 30%
+        # p ≥ 40 -> 15%
         return (p * PriceProcessing.HIGH_MIN_REL_MARGIN).quantize(
             PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP
         )
@@ -333,25 +351,28 @@ class PriceProcessing:
             # 3) Psychologisches Runden auf nächste x,99
             p = PriceProcessing._round_x99_up(p)
 
-            # SICHERHEITSNETZ
+            # SICHERHEITSNETZ (Überarbeitete Hard-Caps)
             ek_total = ek + bl_shipping
             
+            # Max Cap ist das kleinere aus absoluten Schwellen und relativem Faktor (berechneter Preis * 1.2)
+            relative_cap = p * Decimal('1.2')
+            
             if ek_total <= Decimal('5.00'):
-                max_allowed_price = min(ek_total * Decimal('6.0'), Decimal('29.99'))
+                hard_cap = Decimal('16.99')
             elif ek_total <= Decimal('10.00'):
-                max_allowed_price = min(ek_total * Decimal('5.0'), Decimal('39.99'))
-            elif ek_total <= Decimal('15.00'):
-                max_allowed_price = min(ek_total * Decimal('4.5'), Decimal('49.99'))
+                hard_cap = Decimal('28.99')
             elif ek_total <= Decimal('20.00'):
-                max_allowed_price = min(ek_total * Decimal('4.0'), Decimal('59.99'))
+                hard_cap = Decimal('45.99')
             else:
-                max_allowed_price = min(ek_total * Decimal('3.0'), Decimal('149.99'))
+                hard_cap = min(ek_total * Decimal('2.5'), Decimal('149.99'))
+            
+            max_allowed_price = min(hard_cap, relative_cap)
             
             while not PriceProcessing._meets_margin(ek, bl_shipping, p, addcost_low_mid, addcost_high, steuer_satz, fixed_costs_monthly, expected_sales):
                 p = PriceProcessing._round_x99_up(p + Decimal('0.01'))
                 if p > max_allowed_price:
-                    logger.warning(f"Preis-Obergrenze ({max_allowed_price}€) während Margen-Check bei EK {ek_total}€ erreicht. Breche Endlos-Schleife ab.")
-                    return max_allowed_price
+                    logger.warning(f"Preis-Obergrenze ({max_allowed_price}€) bei EK {ek_total}€ erreicht. Cap greift.")
+                    return max_allowed_price.quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
                     
             return p.quantize(PriceProcessing.DECIMAL_PLACES, rounding=ROUND_HALF_UP)
         except Exception as e:
@@ -391,7 +412,7 @@ class PriceProcessing:
                 p_rel = base / denom
                 p_new = p_fix if p_fix >= p_rel else p_rel
             else:
-                # High: 30% p
+                # High: 15% p
                 denom = (Decimal('1.0') - fee_rate - PriceProcessing.HIGH_MIN_REL_MARGIN)
                 if denom <= 0:
                     denom = Decimal('0.0001')

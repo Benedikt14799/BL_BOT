@@ -19,7 +19,7 @@ semaphore = asyncio.Semaphore(15)
 
 # Basis-URL für relative Pfade
 BASE_URL = "https://www.booklooker.de"
-
+import os
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
@@ -42,35 +42,51 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
             await asyncio.sleep(wait_time)
 
 
-def extract_offer_links_from_page(html: str) -> list[str]:
+def extract_offer_links_from_page(html: str) -> list[tuple[str, bool]]:
     """
-    Parst eine Übersichtsseite und gibt alle Detail‑URLs der Angebote zurück.
+    Parst eine Übersichtsseite und gibt alle Detail‑URLs der Angebote sowie Flag für Privat-Seller zurück.
     (Erfasst auch gelb hinterlegte Einträge.)
+    Wir suchen nach der Kombination aus articleRow (Body) und dem darauffolgenden Footer.
     """
     soup = BeautifulSoup(html, "lxml")
-    links: list[str] = []
+    results = []
 
-    # Nimm alle Artikel‑Container, egal ob gelb oder weiß
-    for article in soup.select("div.resultlist_products div.articleRow"):
-        # Finde das erste <a href="/.../id/..."> im Container
+    # Nimm alle Artikel‑Container. Wir suchen die 'body' Rows (mit Link, ohne h2 Titel).
+    for article in soup.select("div.articleRow"):
         a_tag = article.find("a", href=re.compile(r"/.*/id/"))
-        if not a_tag:
+        if not a_tag or article.find("h2"):
             continue
 
         href = a_tag.get("href")
-        if not href:
+        if not href or "/id/" not in href:
             continue
 
-        # nur echte Detailseiten mit '/id/'
-        if "/id/" not in href:
-            continue
+        full_url = urljoin("https://via.booklooker.de", href).replace("https://via.", "https://www.")
+        
+        # Suche den nächsten Footer-Sibling, um Privat-Status zu ermitteln
+        is_private = False
+        next_node = article.find_next_sibling()
+        while next_node:
+            classes = next_node.get("class", [])
+            if classes and any(c in classes for c in ["resultlist_productsproductfooter", "resultlist_productspremiumfooter"]):
+                is_private = "von privat" in next_node.get_text().lower()
+                break
+            # Wenn wir auf den nächsten Artikel-Block stoßen, haben wir den Footer verpasst
+            if classes and "articleRow" in classes:
+                break
+            next_node = next_node.find_next_sibling()
+        
+        results.append((full_url, is_private))
 
-        full_url = urljoin(BASE_URL, href)
-        links.append(full_url)
-
-    # Booklooker hat oft eine Listen- UND eine Kachelansicht im HTML (display:none), 
-    # was zu doppelten Links führt. Wir deduplizieren hier (Reihenfolge bleibt erhalten):
-    return list(dict.fromkeys(links))
+    # Deduplizierung (Reihenfolge bleibt erhalten)
+    seen = set()
+    unique_results = []
+    for link, is_priv in results:
+        if link not in seen:
+            seen.add(link)
+            unique_results.append((link, is_priv))
+            
+    return unique_results
 
 
 async def fetch_and_process(session: aiohttp.ClientSession, link: str):
@@ -125,6 +141,8 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
             return None
 
 
+async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
+    """Fügt Links in sitetoscrape ein und berechnet vorab die Seitenzahl (anzahlSeiten)."""
     # Suffix aus Umgebungsvariablen laden
     import os
     suffix = os.getenv("BL_URL_SUFFIX", "").strip()
@@ -146,31 +164,44 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
         processed_links.append(cleaned_link)
 
     async with db_pool.acquire() as conn:
-        existing = {r["link"] for r in await conn.fetch("SELECT link FROM sitetoscrape;")}
+        # Wir holen alle Links, die bereits existieren, um zu sehen, welche Metadaten fehlen (NULL).
+        rows = await conn.fetch("SELECT link, anzahlSeiten FROM sitetoscrape WHERE link = ANY($1)", processed_links)
+        existing_meta = {r["link"]: r["anzahlseiten"] for r in rows}
 
-    new_links = [l for l in processed_links if l not in existing]
-    if not new_links:
-        logger.info("Keine neuen Links in sitetoscrape (nach Suffix-Check).")
+    # Wir verarbeiten Links, die entweder neu sind ODER bei denen anzahlSeiten noch NULL ist.
+    links_to_fetch = []
+    for l in processed_links:
+        if l not in existing_meta or existing_meta[l] is None:
+            links_to_fetch.append(l)
+
+    if not links_to_fetch:
+        logger.info("Alle Links bereits mit Metadaten in sitetoscrape vorhanden.")
         return
 
+    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links...")
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            *(fetch_and_process(session, l) for l in new_links),
+            *(fetch_and_process(session, l) for l in links_to_fetch),
             return_exceptions=True
         )
 
     insert_data = [r for r in results if isinstance(r, tuple)]
     if insert_data:
         async with db_pool.acquire() as conn:
-            await conn.executemany(
-                """
-                INSERT INTO sitetoscrape (link, anzahlSeiten, numbersOfBooks)
-                VALUES ($1,$2,$3)
-                ON CONFLICT (link) DO NOTHING
-                """,
-                insert_data
-            )
-        logger.info(f"{len(insert_data)} neue Links in sitetoscrape eingefügt.")
+            # UPSERT: Falls Link existiert, Metadaten aktualisieren
+            for l, p, b in insert_data:
+                await conn.execute(
+                    """
+                    INSERT INTO sitetoscrape (link, anzahlSeiten, numbersOfBooks, is_scraped)
+                    VALUES ($1, $2, $3, FALSE)
+                    ON CONFLICT (link) DO UPDATE 
+                    SET anzahlSeiten = EXCLUDED.anzahlSeiten, 
+                        numbersOfBooks = EXCLUDED.numbersOfBooks,
+                        is_scraped = FALSE
+                    """,
+                    l, p, b
+                )
+        logger.info(f"{len(insert_data)} Links in sitetoscrape eingefügt/aktualisiert.")
 
 
 def build_page_url(base_link: str, page: int) -> str:
@@ -183,20 +214,20 @@ def build_page_url(base_link: str, page: int) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
 
 
-async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list[str]:
+async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list[tuple[str, bool]]:
     """
     Lädt eine Übersichtsseite und gibt alle Angebots-Detaillinks zurück.
     Zusätzlich loggt er bei Bedarf jede gefundene URL im Debug-Level.
     """
     try:
         html_content = await fetch_html(session, page_url)
-        links = extract_offer_links_from_page(html_content)
-        logger.info(f"Seite {page_url}: {len(links)} Detail-Links gefunden")
-        for link in links:
-            logger.debug(f"Gefundener Link auf {page_url}: {link}")
-        if not links:
+        results = extract_offer_links_from_page(html_content)
+        logger.info(f"Seite {page_url}: {len(results)} Detail-Links gefunden")
+        for link, is_priv in results:
+            logger.debug(f"Gefundener Link auf {page_url} (Privat: {is_priv}): {link}")
+        if not results:
             logger.warning(f"⚠️ Seite {page_url} lieferte 0 Detail-Links.")
-        return links
+        return results
     except Exception as e:
         logger.error(f"Fehler beim Parsen von {page_url}: {e}")
         return []
@@ -206,26 +237,30 @@ async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: st
     """
     Ruft fetch_and_parse auf, speichert jeden Angebots-Link in library und liefert die Anzahl gespeicherter Links.
     """
-    links = await fetch_and_parse(session, page_url)
-    if not links:
+    results = await fetch_and_parse(session, page_url)
+    if not results:
         return 0
 
-    insert_data = [(l, sitetoscrape_id) for l in links]
     try:
         async with db_pool.acquire() as conn:
-            # executemany gibt keinen "RETURNING"-Wert in asyncpg direkt einfach zurück bei on conflict do nothing
-            # Wir machen es eleganter:
+            # Wir nutzen unnest() um ein executemany mit Arrays in einem execute-Call abzubilden
             result = await conn.execute(
                 """
-                INSERT INTO library (LinkToBL, sitetoscrape_id)
-                VALUES %s
-                ON CONFLICT (LinkToBL) DO NOTHING
-                """ % ", ".join(f"('{l}', {sitetoscrape_id})" for l, _ in insert_data) # Direkter String-Build für Execute (einfacher für Count)
+                INSERT INTO library (LinkToBL, sitetoscrape_id, is_private)
+                SELECT * FROM unnest($1::text[], $2::int[], $3::boolean[])
+                ON CONFLICT (LinkToBL) DO NOTHING;
+                """,
+                [r[0] for r in results],
+                [sitetoscrape_id] * len(results),
+                [r[1] for r in results]
             )
-            # result ist z.B. "INSERT 0 15"
-            inserted_count = int(result.split()[-1]) if result.startswith("INSERT") else 0
             
-        logger.info(f"Seite {page_url}: {len(links)} Links gefunden -> {inserted_count} NEU in DB gespeichert (sitetoscrape_id: {sitetoscrape_id}).")
+            # extrahiert String wie 'INSERT 0 10'
+            import re
+            m = re.search(r'\d+$', result)
+            inserted_count = int(m.group(0)) if m else 0
+
+        logger.info(f"Seite {page_url}: {len(results)} Links gefunden -> {inserted_count} NEU in DB gespeichert (sitetoscrape_id: {sitetoscrape_id}).")
         return inserted_count
     except Exception as e:
         logger.error(f"Fehler beim Speichern der Links von {page_url}: {e}")
@@ -238,11 +273,17 @@ async def scrape_and_save_pages(db_pool):
     3) Summiert erwartete vs. gefundene Links und setzt Fremdschlüssel.
     """
     async with db_pool.acquire() as conn:
+        # Wir loggen auch kurz, wie viele Links wir insgesamt in sitetoscrape haben, die noch nicht gescrapt sind
+        all_wartend = await conn.fetchval("SELECT count(*) FROM sitetoscrape WHERE (is_scraped IS NULL OR is_scraped = FALSE)")
         rows = await conn.fetch(
             "SELECT id, link, anzahlSeiten, numbersOfBooks FROM sitetoscrape WHERE anzahlSeiten > 0 AND (is_scraped IS NULL OR is_scraped = FALSE);"
         )
+    
     if not rows:
-        logger.info("Keine Seiten zum Scrapen.")
+        if all_wartend > 0:
+            logger.warning(f"Es gibt {all_wartend} Links in sitetoscrape, aber bei allen fehlt noch die Seitenzahl (anzahlSeiten). Bitte Link erneut hinzufügen oder Metadaten-Check abwarten.")
+        else:
+            logger.info("Keine neuen Seiten zum Scrapen gefunden.")
         return
 
     total_expected = sum(r["numbersofbooks"] for r in rows)
@@ -285,6 +326,106 @@ async def scrape_and_save_pages(db_pool):
 # Detailverarbeitung – optimiert
 # ===============================
 
+async def find_backups_for_isbn(session, isbn, original_link, original_condition_norm, fixed_costs, expected_sales, min_margin, addcost_low, addcost_high, steuer_satz):
+    """
+    Sucht nach Backups auf Booklooker für eine gegebene ISBN.
+    Hierarchie:
+    - B1: Weiteres Privat-Angebot (muss marginpositiv / rentabel sein)
+    - B2: Gewerbliches Angebot (muss mindestens break-even sein, Marge >= 0)
+    Bedingung für beide: Zustand darf nicht schlechter sein als original_condition_norm.
+    """
+    backups = {"b1": None, "b2": None}
+    if not isbn:
+        return backups
+
+    from urllib.parse import urljoin
+    from decimal import Decimal
+    import bl_processing
+    import price_processing
+
+    search_url = f"https://www.booklooker.de/B%C3%BCcher/Angebote/isbn={isbn}?sortOrder=preis_total"
+    
+    try:
+        html = await fetch_html(session, search_url)
+    except Exception as e:
+        logger.debug(f"Fehler bei Backup-Suche für {isbn}: {e}")
+        return backups
+        
+    soup = BeautifulSoup(html, "lxml")
+
+    # Wenn direkt auf Artikel weitergeleitet wurde (keine Liste), gibt es keine Backups.
+    if soup.find(class_="articleDetails"):
+        return backups
+
+    articles = soup.select("div.resultlist_products div.articleRow")
+    
+    # Max 10 günstigste Alternativen prüfen, um API-Calls zu begrenzen
+    for article in articles[:10]:
+        if backups["b1"] and backups["b2"]: 
+            break
+            
+        a_tag = article.find("a", href=re.compile(r"/.*/id/"))
+        if not a_tag:
+            continue
+        
+        href = a_tag.get("href")
+        full_url = urljoin(BASE_URL, href)
+        
+        if full_url == original_link:
+            continue
+            
+        try:
+            detail_html = await fetch_html(session, full_url)
+            detail_soup = BeautifulSoup(detail_html, "lxml")
+            
+            props = bl_processing.PropertyExtractor.extract_property_items(detail_soup)
+            is_private = (props.get("is_private:", "False").lower() == "true")
+            
+            cond_raw = props.get("zustand:", "")
+            cond_norm = bl_processing.PropertyToDatabase._map_condition(cond_raw)
+            
+            # Zustand muss mindestens so gut sein wie das Original (kleinere Nummer = besser)
+            if cond_norm > original_condition_norm:
+                continue
+                
+            ek = price_processing.PriceProcessing._safe_clean_price(detail_soup)
+            bl_ship = price_processing.PriceProcessing._safe_extract_shipping(detail_soup)
+            
+            if ek <= Decimal('0.00'):
+                continue
+                
+            # Fiktiven eBay Endpreis für Backup berechnen
+            new_ebay_p = price_processing.PriceProcessing._compute_final_price(
+                ek, bl_ship, addcost_low, addcost_high, steuer_satz, fixed_costs, expected_sales
+            )
+            if not new_ebay_p:
+                continue
+                
+            prof = price_processing.PriceProcessing.calculate_profitability(
+                ek, bl_ship, new_ebay_p,
+                monthly_fixed_costs=fixed_costs, expected_sales=expected_sales,
+                min_margin=min_margin, addcost_low_mid=addcost_low, addcost_high=addcost_high, steuer_satz=steuer_satz
+            )
+            
+            if is_private and not backups["b1"]:
+                if prof["rentabel"]: # Privat -> muss Zielmarge erreichen
+                    backups["b1"] = {
+                        "url": full_url, "price": float(ek), "shipping": float(bl_ship), "is_private": True
+                    }
+                    logger.info(f"[BACKUP FOUND] B1 (Privat/Margin+) für {isbn} gefunden.")
+            elif not is_private and not backups["b2"]:
+                if prof["marge"] >= 0: # Gewerblich -> Break-Even reicht
+                    backups["b2"] = {
+                        "url": full_url, "price": float(ek), "shipping": float(bl_ship), "is_private": False
+                    }
+                    logger.info(f"[BACKUP FOUND] B2 (Gewerblich/Break-Even) für {isbn} gefunden.")
+                    
+        except Exception as e:
+            logger.debug(f"Fehler bei Backup-Prüfung von {full_url}: {e}")
+            continue
+
+    return backups
+
 # Konfiguration für Detailphase
 DETAIL_SEMAPHORE = asyncio.Semaphore(50)  # behutsame Parallelität (Serverfreundlich anpassen)
 MAX_RETRIES = 2
@@ -300,6 +441,7 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
     - Properties
     """
     num, link = row["id"], row["linktobl"]
+    is_private_seller = row.get("is_private", False)
 
     # Retry-Loop pro Eintrag
     attempt = 0
@@ -329,17 +471,22 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     steuer_satz=steuer_satz
                 )
 
-                # Wenn unrentabel, in separate Tabelle verschieben
+                # Wenn unrentabel oder unrealistisch, in entsprechende Tabelle verschieben und aus library löschen
                 if prof and not prof.get('rentabel'):
-                    await DatabaseManager.record_unprofitable_listing(
-                        db_pool,
-                        num,
-                        link,
-                        f"Nicht rentabel (fehlt {prof.get('fehlende_marge')}€)",
-                        prof.get('ebay_p'),
-                        prof.get('marge')
-                    )
-                    return "deleted_unprofitable"
+                    if prof.get('error_type') == 'unrealistic_price':
+                        logger.warning(f"[{num}] Markt-Validierung: Unrealistisch. Verschiebe in missing_listings.")
+                        await DatabaseManager.record_missing_listing(db_pool, num, link, "unrealistic_price")
+                        return "deleted_unrealistic"
+                    else:
+                        await DatabaseManager.record_unprofitable_listing(
+                            db_pool,
+                            num,
+                            link,
+                            f"Nicht rentabel (fehlt {prof.get('fehlende_marge')}€)",
+                            prof.get('ebay_p'),
+                            prof.get('marge')
+                        )
+                        return "deleted_unprofitable"
 
                 # Bilder extrahieren und speichern
                 # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
@@ -347,14 +494,48 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     session, soup, num, db_pool, isbn or ""
                 )
 
-                # Properties extrahieren und speichern (inkl. DNB)
-                status = await bl_processing.PropertyToDatabase.process_and_save(soup, num, db_pool, extra_props=dnb_props)
+                # Eigenschaften vorab auswerten, um Zustand etc. zu prüfen
+                props_raw = bl_processing.PropertyExtractor.extract_property_items(soup)
+
+                if is_private_seller:
+                    cond_norm = bl_processing.PropertyToDatabase._map_condition(props_raw.get("zustand:", ""))
+                    backups = await find_backups_for_isbn(
+                        session, isbn, link, cond_norm, 
+                        fixed_costs, expected_sales, min_margin, 
+                        zusatzkosten_low, zusatzkosten_high, steuer_satz
+                    )
+                    
+                    if not backups["b1"] and not backups["b2"]:
+                        logger.warning(f"[{num}] Privat-Anbieter, aber kein valides Backup gefunden. Verschiebe in missing_listings.")
+                        await DatabaseManager.record_missing_listing(db_pool, num, link, "no_valid_backup")
+                        return "deleted_no_backup"
+                    
+                    dnb_props = dnb_props or {}
+                    if backups["b1"]:
+                        dnb_props["backup1_url"] = backups["b1"]["url"]
+                        dnb_props["backup1_price"] = backups["b1"]["price"]
+                        dnb_props["backup1_shipping"] = backups["b1"]["shipping"]
+                        dnb_props["backup1_is_private"] = str(backups["b1"]["is_private"])
+                    if backups["b2"]:
+                        dnb_props["backup2_url"] = backups["b2"]["url"]
+                        dnb_props["backup2_price"] = backups["b2"]["price"]
+                        dnb_props["backup2_shipping"] = backups["b2"]["shipping"]
+                        dnb_props["backup2_is_private"] = str(backups["b2"]["is_private"])
+
+                # Properties extrahieren und speichern (inkl. DNB und Backups)
+                prop_status = await bl_processing.PropertyToDatabase.process_and_save(soup, num, db_pool, extra_props=dnb_props)
                 
-                if status == "schlechte_bewertung":
+                if prop_status == "schlechte_bewertung":
                     logger.warning(f"Artikel {num} hat eine Verkäuferbewertung unter 98% – verschiebe.")
                     await DatabaseManager.record_missing_listing(db_pool, num, link, "schlechte_bewertung")
                     return "deleted_schlechte_bewertung"
+                elif prop_status is False:
+                    # Wenn Speichern fehlgeschlagen ist, nicht als aktiv markieren
+                    logger.error(f"[{num}] Metadaten konnten nicht gespeichert werden. Überspringe Aktivierung.")
+                    return "error"
 
+                # Erfolgreich verarbeitet -> Status auf active (1) setzen
+                await DatabaseManager.mark_as_active(db_pool, num)
                 return "ok"
 
         except Exception as e:
@@ -407,19 +588,28 @@ async def process_library_links_async(db_pool):
             # Gesamtzahl aller erfassten Links ermitteln (für den Log-Vergleich)
             total_in_db_result = await conn.fetchval("SELECT COUNT(*) FROM library;")
             total_in_db = total_in_db_result if total_in_db_result else 0
-            
-            # Nur Bücher verarbeiten, die noch keine Daten (ISBN) haben
-            rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE isbn IS NULL;")
+
+            # Nur Bücher verarbeiten, die unvollständig sind (keine Fotos oder kein Titel)
+            # Wir nehmen auch status_id=2 (missing_isbn/photo) oder 7 (pending) mit auf für Retries
+            rows = await conn.fetch("""
+                SELECT id, LinkToBL, is_private 
+                FROM library 
+                WHERE (isbn IS NULL OR photo IS NULL OR photo = '')
+                  AND (status_id IS NULL OR status_id IN (2, 7))
+            """)
 
         total_to_process = len(rows)
         skipped = total_in_db - total_to_process
 
         if total_to_process == 0:
-            logger.info("Keine Einträge in library zu verarbeiten.")
+            if total_in_db > 0:
+                logger.info(f"Alle {total_in_db} Einträge in library wurden bereits verarbeitet (ISBN vorhanden). Keine neuen Aufgaben.")
+            else:
+                logger.info("Keine Einträge in library zu verarbeiten (Tabelle ist leer).")
             return
 
         if skipped > 0:
-            logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge (überspringe {skipped} bereits verarbeitete Bücher)…")
+            logger.info(f"💾 Starte Detailverarbeitung für {total_to_process} Einträge (überspringe {skipped} bereits verarbeitete Bücher)…")
         else:
             logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge…")
 
@@ -440,19 +630,8 @@ async def process_library_links_async(db_pool):
                 deleted_isbn = sum(1 for r in results if r == "deleted_missing_isbn")
                 errors = sum(1 for r in results if r == "error" or isinstance(r, Exception))
 
-                processed += len(batch)
-                logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
-
-        # Finaler Cleanup: fehlende Fotos sicher entfernen (Soll-Regel)
-        async with db_pool.acquire() as conn:
-            missing_photo_rows = await conn.fetch("SELECT id, LinkToBL FROM library WHERE COALESCE(photo,'') = ''")
-            if missing_photo_rows:
-                for r in missing_photo_rows:
-                    try:
-                        await DatabaseManager.record_missing_listing(db_pool, r["id"], r["linktobl"], "missing_photo_final")
-                    except Exception as e:
-                        logger.error(f"[{r['id']}] Cleanup fehlende Fotos: {e}")
-                logger.warning(f"Cleanup: {len(missing_photo_rows)} Einträge ohne Fotos endgültig verschoben/gelöscht.")
+            processed += len(batch)
+            logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
 
     except Exception as e:
         logger.error(f"Fehler in process_library_links_async: {e}")

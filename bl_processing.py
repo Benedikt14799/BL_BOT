@@ -9,19 +9,31 @@ logger = logging.getLogger(__name__)
 
 class PropertyToDatabase:
     NORMALIZED_MAPPING = {
-        "titel": ["Title", "Buchtitel"],
-        "zustand": ["Condition_ID"],
-        "verlag": ["Verlag"],
-        "format": ["CFormat"],
-        "auflage": ["Ausgabe"],
-        "sprache": ["Sprache"],
-        "stichwörter": ["Thematik"],
-        "autor/in": ["Autor"],
-        "vom autor signiert": ["Signiert_von"],
-        "einband": ["Produktart"],
-        "produktart": ["Produktart"],
-        "erschienen": ["Erscheinungsjahr"],
-        "versanddauer": ["Max_dispatch_time"],
+        "buchtitel": ["title"],
+        "titel": ["title"],
+        "zustand": ["condition_id"],
+        "erhaltungszustand": ["bl_condition"],
+        "verlag": ["verlag"],
+        "format": ["cformat"],
+        "auflage": ["ausgabe"],
+        "sprache": ["sprache"],
+        "stichwörter": ["thematik"],
+        "autor/in": ["autor"],
+        "autor": ["autor"],
+        "vom autor signiert": ["signiert_von"],
+        "einband": ["produktart"],
+        "produktart": ["produktart"],
+        "erschienen": ["erscheinungsjahr"],
+        "versanddauer": ["max_dispatch_time"],
+        "is_private": ["is_private"],
+        "backup1_url": ["backup1_url"],
+        "backup1_price": ["backup1_price"],
+        "backup1_shipping": ["backup1_shipping"],
+        "backup1_is_private": ["backup1_is_private"],
+        "backup2_url": ["backup2_url"],
+        "backup2_price": ["backup2_price"],
+        "backup2_shipping": ["backup2_shipping"],
+        "backup2_is_private": ["backup2_is_private"],
     }
 
     PRODUCTART_MAP = {
@@ -71,6 +83,41 @@ class PropertyToDatabase:
         r"fachhändler", r"rechnung", r"mwst", r"blitzversand", r"versand heute", 
         r"sofort"
     ]
+
+    @staticmethod
+    def _map_condition(condition_str: str) -> int:
+        """
+        Extrahiert die numerische Zustands-ID aus dem Booklooker-String (z.B. '5000-Gut' -> 5000).
+        Fällt auf Text-Mapping zurück, wenn keine Zahl gefunden wird.
+        """
+        if not condition_str:
+            return 0
+        
+        c = str(condition_str).lower()
+        
+        # 1. Versuche Zahl direkt zu finden (z.B. '5000-Gut')
+        m = re.search(r"(\d+)", c)
+        if m:
+            try:
+                return int(m.group(1))
+            except:
+                pass
+        
+        # 2. Fallback auf Text-Mapping für Detailseiten-Werte
+        if "wie neu" in c:
+            return 1000
+        if "sehr gut" in c:
+            return 2000
+        if "leichte gebrauchsspuren" in c:
+            return 4000
+        if "gut" in c:
+            return 5000
+        if "deutliche gebrauchsspuren" in c:
+            return 8000
+        if "starke gebrauchsspuren" in c:
+            return 9000
+            
+        return 0
 
     @staticmethod
     def _normalize_key(s: str) -> str:
@@ -402,16 +449,18 @@ class PropertyToDatabase:
                 if key_norm == "stichwörter":
                     val = PropertyToDatabase.normalize_thematik(val)
 
-                # Buchtitel explizit speichern (wird am Ende nochmal für generierten Titel genutzt)
-                if key_norm == "titel":
-                    temp_values["Buchtitel"] = val
-                    db_columns += ["Buchtitel"]
-                    db_values  += [temp_values["Buchtitel"]]
-                    continue
+                # Buchtitel captureren für eBay Title (unabhängig von Mapping)
+                if key_norm in ("titel", "buchtitel"):
+                    temp_values["title"] = val
 
-                # Zustand
+                # Zustand: Extrahiere Zahl für condition_id
                 if key_norm == "zustand":
                     val = PropertyToDatabase._map_condition(val)
+
+                # is_private: parse boolean string
+                if key_norm in ("is_private", "backup1_is_private", "backup2_is_private"):
+                    if isinstance(val, str):
+                        val = (val.lower() == "true")
 
                 # Produktart
                 if key_norm in ("produktart", "einband"):
@@ -426,14 +475,14 @@ class PropertyToDatabase:
                     target_col = target_cols[0]
 
                     # cformat – Maße normalisieren
-                    if target_col == "CFormat":
+                    if target_col == "cformat":
                         cf = PropertyToDatabase.normalize_cformat(str(val))
                         if cf:
                             val = cf
-                        temp_values["CFormat"] = val
+                        temp_values["cformat"] = val
 
-                    if target_col == "Thematik":
-                        temp_values["Thematik"] = val
+                    if target_col == "thematik":
+                        temp_values["thematik"] = val
 
                     db_columns.append(target_col)
                     db_values.append(val)
@@ -442,34 +491,39 @@ class PropertyToDatabase:
 
             # Produktart-Heuristik
             current_pa = None
-            if "Produktart" in db_columns:
-                idx = max(i for i, c in enumerate(db_columns) if c == "Produktart")
+            if "produktart" in db_columns:
+                idx = max(i for i, c in enumerate(db_columns) if c == "produktart")
                 current_pa = db_values[idx]
                 inferred = PropertyToDatabase.infer_productart_if_missing(
-                    current_pa, temp_values.get("CFormat"),
-                    temp_values.get("Buchtitel") or temp_values.get("Title"),
-                    temp_values.get("Thematik")
+                    current_pa, temp_values.get("cformat"),
+                    temp_values.get("title"),
+                    temp_values.get("thematik")
                 )
                 if inferred != current_pa:
                     db_values[idx] = inferred
             else:
                 inferred = PropertyToDatabase.infer_productart_if_missing(
-                    "Keine Angabe", temp_values.get("CFormat"),
-                    temp_values.get("Buchtitel") or temp_values.get("Title"),
-                    temp_values.get("Thematik")
+                    "Keine Angabe", temp_values.get("cformat"),
+                    temp_values.get("title"),
+                    temp_values.get("thematik")
                 )
                 if inferred and inferred != "Keine Angabe":
-                    db_columns.append("Produktart")
+                    db_columns.append("produktart")
                     db_values.append(inferred)
 
             # Ebay Title erzeugen
             ebay_title = PropertyToDatabase.build_ebay_title(normalized_props)
-            db_columns.append("Title")
-            db_values.append(ebay_title)
+            if "title" not in db_columns:
+                db_columns.append("title")
+                db_values.append(ebay_title)
+            else:
+                # Falls bereits vorhanden (z.B. aus Buchtitel), überschreiben mit generiertem Ebay-Titel
+                idx = db_columns.index("title")
+                db_values[idx] = ebay_title
 
             # Beschreibung
             description_html = PropertyToDatabase.build_description_html(normalized_props)
-            db_columns.append("Description")
+            db_columns.append("description")
             db_values.append(description_html)
 
             if not db_columns:
@@ -495,35 +549,6 @@ class PropertyToDatabase:
             logger.error(f"[{num}] Fehler beim Speichern der PropertyItems: {e}")
             return False
 
-    @staticmethod
-    def _map_condition(condition: str) -> str:
-        if not condition:
-            return "5000-Gut"  # Fallback
-
-        norm = PropertyToDatabase._normalize_key(condition)
-
-        # Heuristik mit Synonymen
-        if any(k in norm for k in ["neuwertig", "wie neu", "neuware"]):
-            return "1000-Neuwertig"
-        if any(k in norm for k in ["sehr gut", "kaum gelesen", "nur geringe spuren", "sehr guter zustand"]):
-            return "4000-Sehr gut"
-        if any(k in norm for k in ["gut", "leichte gebrauchsspuren", "gebrauchsspuren", "guter zustand"]):
-            return "5000-Gut"
-        if any(k in norm for k in ["akzeptabel", "deutliche gebrauchsspuren", "stärkere spuren", "befriedigend"]):
-            return "6000-Akzeptabel"
-        if any(k in norm for k in ["stark abgenutzt", "stark gebraucht", "beschädigt", "wasserschaden", "mangelhaft"]):
-            return "7000-Stark gebraucht"
-
-        # Fallback-Mapping
-        mapping = {
-            "neu, aktuelle ausgabe": "1000-Neuwertig",
-            "neuware": "1000-Neuwertig",
-            "wie neu": "1000-Neuwertig",
-            "leichte gebrauchsspuren": "5000-Gut",
-            "deutliche gebrauchsspuren": "6000-Akzeptabel",
-            "stark abgenutzt": "7000-Stark gebraucht",
-        }
-        return mapping.get(norm, "5000-Gut")
 
     @staticmethod
     def build_description_html(properties_norm: dict) -> str:
@@ -625,7 +650,6 @@ class PropertyExtractor:
             desc_div = soup.find("div", class_="description")
             if desc_div:
                 props["erhaltungszustand_detail:"] = desc_div.text.strip()
-            
             return props
         except Exception as e:
             logger.error(f"Fehler beim Extrahieren der PropertyItems: {e}")
