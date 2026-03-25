@@ -131,3 +131,20 @@ def parse_rate_limit_response(data: dict) -> dict:
         logger.error(f"Fehler beim Parsen der Rate Limit Response: {e}")
         
     return result
+
+async def has_sufficient_quota(session: aiohttp.ClientSession, min_required: int = 10) -> tuple[bool, int, str]:
+    """
+    Prüft, ob genügend Kontingent für die Buy/Browse API übrig ist.
+    Gibt (bool_erfolg, verbleibend, reset_zeit) zurück.
+    """
+    try:
+        status = await get_rate_limit_status(session)
+        buy = status.get("buy", {})
+        remaining = buy.get("remaining", 0)
+        reset = buy.get("reset", "Unbekannt")
+        return (remaining >= min_required), remaining, reset
+    except Exception as e:
+        logger.error(f"Fehler bei Quoten-Prüfung: {e}")
+        # Im Fehlerfall lieber pausieren oder weitermachen? 
+        # Da wir kein Risiko gehen wollen: False
+        return False, 0, "Fehler bei Abfrage"

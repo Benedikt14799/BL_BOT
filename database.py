@@ -138,6 +138,9 @@ class DatabaseManager:
                     -- eBay Metadata
                     ebay_action VARCHAR(50),
                     category_id BIGINT,
+                    shipping_profile_name VARCHAR(255),
+                    return_profile_name VARCHAR(255),
+                    payment_profile_name VARCHAR(255),
                     duration VARCHAR(25) DEFAULT 'GTC',
                     
                     -- Metadata Fields 
@@ -171,16 +174,53 @@ class DatabaseManager:
                     next_recheck_date DATE,
                     ebay_error TEXT,
                     ebay_delisted_reason TEXT,
+                    ebay_listed BOOLEAN DEFAULT FALSE,
 
                     -- Verknüpfung
                     sitetoscrape_id INTEGER REFERENCES sitetoscrape(id)
                 );
             """)
             
-            # Migration: status_id hinzufügen, falls die Tabelle schon existierte (für Option A transition)
+            # Migration: Fehlende Spalten hinzufügen, falls die Tabelle schon existierte
             try:
                 await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS status_id INTEGER DEFAULT 7 REFERENCES library_statuses(id);")
-            except: pass
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS shipping_profile_name VARCHAR(255);")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS return_profile_name VARCHAR(255);")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS payment_profile_name VARCHAR(255);")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS condition_id INTEGER;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS bl_condition VARCHAR(100);")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS is_private BOOLEAN DEFAULT FALSE;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup1_url TEXT;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup1_price NUMERIC;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup1_shipping NUMERIC;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup1_is_private BOOLEAN DEFAULT FALSE;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup2_url TEXT;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup2_price NUMERIC;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup2_shipping NUMERIC;")
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS backup2_is_private BOOLEAN DEFAULT FALSE;")
+                
+                # Status-Labels korrigieren (ID 2: missing_isbn -> gefiltert)
+                await conn.execute("UPDATE library_statuses SET label = 'gefiltert' WHERE id = 2 AND label = 'missing_isbn';")
+                
+                # Weitere fehlende Spalten
+                await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS ebay_listed BOOLEAN DEFAULT FALSE;")
+                
+                # Numerische Präzision erzwingen (Rundung in DB)
+                numeric_cols = [
+                    "margin", "purchase_price", "purchase_shipping", 
+                    "competitor_min_preis", "competitor_median_preis", "empfohlener_ebay_preis",
+                    "gewinn_real", "fehlende_marge", "start_price",
+                    "minimum_best_offer_price", "best_offer_auto_accept_price",
+                    "backup1_price", "backup1_shipping", "backup2_price", "backup2_shipping"
+                ]
+                for col in numeric_cols:
+                    try:
+                        await conn.execute(f"ALTER TABLE library ALTER COLUMN {col} TYPE NUMERIC(10, 2);")
+                    except Exception as e:
+                        logger.debug(f"Konnte Spalte {col} nicht auf NUMERIC(10,2) umstellen: {e}")
+
+            except Exception as e:
+                logger.warning(f"Fehler bei Migration: {e}")
 
             if not exists:
                 logger.info("Tabelle 'library' wurde neu angelegt (Relational v1).")
@@ -258,7 +298,7 @@ class DatabaseManager:
     @staticmethod
     async def record_missing_listing(db_pool, library_id: int, link: str, reason: str):
         """
-        Markiert einen Datensatz in library als 'missing_isbn' (Status 2), anstatt ihn zu löschen.
+        Markiert einen Datensatz in library als 'gefiltert' (Status 2), anstatt ihn zu löschen.
         """
         try:
             async with db_pool.acquire() as conn:
@@ -269,9 +309,9 @@ class DatabaseManager:
                         last_checked = NOW()
                     WHERE id = $1
                 """, library_id, reason)
-            logger.info(f"Status 'missing_isbn' für library_id {library_id} gesetzt. Grund={reason}")
+            logger.info(f"Status 'gefiltert' für library_id {library_id} gesetzt. Grund={reason}")
         except Exception as e:
-            logger.error(f"Fehler beim Setzen von Status missing_isbn für {library_id}: {e}")
+            logger.error(f"Fehler beim Setzen von Status gefiltert für {library_id}: {e}")
 
     @staticmethod
     async def record_unprofitable_listing(db_pool, library_id: int, link: str, reason: str, price: float = None, margin: float = None):

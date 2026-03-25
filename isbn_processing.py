@@ -31,15 +31,13 @@ async def process_entry(
         props = extract_properties(soup)
         raw = props.get("ISBN") or props.get("ISBN:")
         if not raw:
-            logger.warning(f"Artikel {num} ohne ISBN – verschiebe.")
-            await DatabaseManager.record_missing_listing(db_pool, num, link, "missing_isbn")
-            return False, None, None, None
+            logger.info(f"Artikel {num} ohne ISBN – fahre ohne ISBN fort.")
+            return True, None, soup, {}
 
         isbn = pick_isbn(raw)
         if not isbn:
-            logger.warning(f"Artikel {num} ohne extrahierbare ISBN – verschiebe.")
-            await DatabaseManager.record_missing_listing(db_pool, num, link, "missing_isbn")
-            return False, None, None, None
+            logger.info(f"Artikel {num} ohne extrahierbare ISBN – fahre ohne ISBN fort.")
+            return True, None, soup, {}
 
         # Gültige ISBN speichern
         async with db_pool.acquire() as conn:
@@ -50,26 +48,27 @@ async def process_entry(
 
         # DNB API Abfrage (XML MARC21)
         dnb_props = {}
-        dnb_url = f"https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=isbn%3D{isbn}&recordSchema=MARC21-xml"
-        try:
-            async with dnb_xml_semaphore:
-                async with session.get(dnb_url, timeout=10) as resp:
-                    if resp.status == 200:
-                        xml_text = await resp.text()
-                        dnb_soup = BeautifulSoup(xml_text, 'xml')
-                        
-                        f300 = dnb_soup.find('datafield', tag='300')
-                        if f300 and f300.find('subfield', code='a'):
-                            dnb_props['seitenanzahl:'] = f300.find('subfield', code='a').text.strip()
-                        
-                        f520 = dnb_soup.find('datafield', tag='520')
-                        if f520 and f520.find('subfield', code='a'):
-                            dnb_props['abstract:'] = f520.find('subfield', code='a').text.strip()
-                        
-                        if dnb_props:
-                            logger.info(f"[{num}] DNB Metadaten extrahiert: {dnb_props}")
-        except Exception as e:
-            logger.warning(f"[{num}] DNB Metadaten Abruf fehlgeschlagen für {isbn}: {e}")
+        if isbn:
+            dnb_url = f"https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=isbn%3D{isbn}&recordSchema=MARC21-xml"
+            try:
+                async with dnb_xml_semaphore:
+                    async with session.get(dnb_url, timeout=10) as resp:
+                        if resp.status == 200:
+                            xml_text = await resp.text()
+                            dnb_soup = BeautifulSoup(xml_text, 'xml')
+                            
+                            f300 = dnb_soup.find('datafield', tag='300')
+                            if f300 and f300.find('subfield', code='a'):
+                                dnb_props['seitenanzahl:'] = f300.find('subfield', code='a').text.strip()
+                            
+                            f520 = dnb_soup.find('datafield', tag='520')
+                            if f520 and f520.find('subfield', code='a'):
+                                dnb_props['abstract:'] = f520.find('subfield', code='a').text.strip()
+                            
+                            if dnb_props:
+                                logger.info(f"[{num}] DNB Metadaten extrahiert: {dnb_props}")
+            except Exception as e:
+                logger.warning(f"[{num}] DNB Metadaten Abruf fehlgeschlagen für {isbn}: {e}")
 
         return True, isbn, soup, dnb_props
 

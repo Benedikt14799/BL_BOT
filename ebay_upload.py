@@ -97,8 +97,6 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
                 WHERE status_id = 1
                   AND (ebay_listed IS FALSE OR ebay_listed IS NULL)
                   AND (ebay_status IS NULL OR ebay_status != 'listed')
-                  AND isbn IS NOT NULL 
-                  AND LENGTH(isbn) > 5
                 ORDER BY id DESC LIMIT $1
             """
             rows = await conn.fetch(query, limit)
@@ -110,7 +108,8 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     """
     Step 1: Create or replace Inventory Item.
     """
-    url = f"{base_url}/sell/inventory/v1/inventory_item/{book_data['isbn']}"
+    sku = book_data['sku']
+    url = f"{base_url}/sell/inventory/v1/inventory_item/{sku}"
     
     headers = {
         "Authorization": f"Bearer {token}",
@@ -238,7 +237,7 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
             "description": final_desc,
             "imageUrls": image_urls,
             "aspects": aspects,
-            "isbn": [book_data['isbn']]
+            "isbn": [book_data['isbn']] if book_data.get('isbn') and len(str(book_data['isbn'])) > 5 else ["Does not apply"]
         },
         "condition": condition,
         "availability": {
@@ -252,7 +251,7 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
         payload["conditionDescription"] = condition_desc
 
     # Debug-Logging für Payload (hilft bei Serialization Errors)
-    logger.info(f"Inventory Item Payload für ISBN {book_data['isbn']}: {json.dumps(payload)}")
+    logger.info(f"Inventory Item Payload für SKU {sku} (ISBN: {book_data.get('isbn')}): {json.dumps(payload)}")
 
     async with session.put(url, headers=headers, json=payload) as resp:
         if resp.status in (200, 201, 204):
@@ -298,7 +297,7 @@ async def create_offer(session: aiohttp.ClientSession, book_data: dict, token: s
         }
 
     payload = {
-        "sku": book_data['isbn'],
+        "sku": book_data['sku'],
         "marketplaceId": "EBAY_DE",
         "format": "FIXED_PRICE",
         "merchantLocationKey": "hauptlager",
@@ -414,7 +413,7 @@ async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, 
     
     try:
         async with upload_semaphore:
-            logger.info(f"Uploading Item {internal_id} (ISBN: {isbn}) - {title[:30]}...")
+            logger.info(f"Uploading Item {internal_id} (SKU: {book_data['sku']}, ISBN: {isbn or 'NONE'}) - {title[:30]}...")
             
             # Step 1
             await create_inventory_item(session, book_data, token, base_url)
@@ -540,7 +539,7 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         books = await get_unlisted_books(db_pool, specific_ids=specific_ids)
         
         if not books:
-            logger.info("No unlisted books found with valid ISBN.")
+            logger.info("No unlisted books found.")
             return
 
         logger.info(f"Found {len(books)} books to upload.")
@@ -554,7 +553,7 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
     logger.info("eBay Upload Batch Finished.")
 
 
-async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_price: float, token: str, base_url: str) -> bool:
+async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_price: float, token: str, base_url: str, isbn: str = None) -> bool:
     """
     Updates ONLY the price of an existing offer/item using the bulk_update_price endpoint.
     """
@@ -573,7 +572,10 @@ async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_p
             data = await resp.json()
             offers = data.get('offers', [])
             if not offers:
-                logger.warning(f"No active offers found for SKU {sku} on eBay.")
+                if isbn and isbn != sku:
+                    logger.info(f"Retry: No offers for SKU {sku}. Trying ISBN {isbn} as fallback SKU...")
+                    return await update_inventory_price(session, isbn, new_price, token, base_url, isbn=None)
+                logger.warning(f"No active offers found for SKU {sku} (and no ISBN fallback) on eBay.")
                 return False
             
             success = True
@@ -604,7 +606,7 @@ async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_p
         return False
 
 
-async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, base_url: str) -> bool:
+async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, base_url: str, isbn: str = None) -> bool:
     """
     Step 1: Find the offerId for the given SKU.
     Step 2: Withdraw the offer (Ends the listing on eBay).
@@ -628,6 +630,9 @@ async def withdraw_offer(session: aiohttp.ClientSession, sku: str, token: str, b
             data = await resp.json()
             offers = data.get('offers', [])
             if not offers:
+                if isbn and isbn != sku:
+                    logger.info(f"Retry: No offers to withdraw for SKU {sku}. Trying ISBN {isbn} as fallback...")
+                    return await withdraw_offer(session, isbn, token, base_url, isbn=None)
                 logger.warning(f"No active offers found for SKU {sku} to withdraw.")
                 return True # Technically "done" if no offer exists
 

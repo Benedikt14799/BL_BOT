@@ -453,7 +453,7 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                 has_isbn, isbn, soup, dnb_props = await isbn_processing.process_entry(session, link, num, db_pool)
                 if not has_isbn:
                     # bereits in missing_listings verschoben und gelöscht
-                    return "deleted_missing_isbn"
+                    return "filtered"
 
                 # Preis berechnen und speichern
                 prof = await price_processing.PriceProcessing.get_price(
@@ -590,7 +590,7 @@ async def process_library_links_async(db_pool):
             total_in_db = total_in_db_result if total_in_db_result else 0
 
             # Nur Bücher verarbeiten, die unvollständig sind (keine Fotos oder kein Titel)
-            # Wir nehmen auch status_id=2 (missing_isbn/photo) oder 7 (pending) mit auf für Retries
+            # Wir nehmen auch status_id=2 (gefiltert) oder 7 (pending) mit auf für Retries
             rows = await conn.fetch("""
                 SELECT id, LinkToBL, is_private 
                 FROM library 
@@ -615,8 +615,17 @@ async def process_library_links_async(db_pool):
 
         processed = 0
         async with aiohttp.ClientSession() as session:
+            from ebay_analytics import has_sufficient_quota
+            
             # in Batches verarbeiten
             for i in range(0, total_to_process, BATCH_SIZE):
+                # RATE LIMIT CHECK (Dazu gekommen für Auto-Scraper)
+                can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=BATCH_SIZE)
+                if not can_continue:
+                    logger.warning(f"eBay API Limit fast erreicht ({remaining} übrig). Auto-Scraper pausiert bis zum Reset: {reset_time}")
+                    # Wir brechen den Loop ab, sodass beim nächsten Start genau hier weitergemacht wird.
+                    break
+
                 batch = rows[i: i + BATCH_SIZE]
                 tasks = [
                     asyncio.create_task(_process_one_entry(
@@ -627,11 +636,11 @@ async def process_library_links_async(db_pool):
 
                 # Zählen/Loggen
                 ok = sum(1 for r in results if r == "ok")
-                deleted_isbn = sum(1 for r in results if r == "deleted_missing_isbn")
+                num_filtered = sum(1 for r in results if r in ("filtered", "deleted_unrealistic", "deleted_unprofitable", "deleted_no_backup", "deleted_schlechte_bewertung"))
                 errors = sum(1 for r in results if r == "error" or isinstance(r, Exception))
 
-            processed += len(batch)
-            logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, missing_isbn_deleted={deleted_isbn}, errors={errors})")
+                processed += len(batch)
+                logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, gefiltert={num_filtered}, errors={errors})")
 
     except Exception as e:
         logger.error(f"Fehler in process_library_links_async: {e}")

@@ -272,7 +272,7 @@ async def try_fallback_rotation(item, session, cost_params, db_pool, token, base
     if listing_id:
         success = await ebay_upload.revise_item_price_by_id(session, listing_id, float(target_ebay_price), token)
     else:
-        success = await ebay_upload.update_inventory_price(session, sku, float(target_ebay_price), token, base_url)
+        success = await ebay_upload.update_inventory_price(session, sku, float(target_ebay_price), token, base_url, isbn=item.get('isbn'))
         
     if success:
         logger.info(f"{worker_id} [FALLBACK {b_type}] Erfolgreiche Rotation zu {new_url} (Neuer eBay-Preis: {target_ebay_price}€)")
@@ -321,7 +321,7 @@ async def process_item(
             if listing_id:
                 success = await ebay_upload.end_item_by_id(session, listing_id, token)
             else:
-                success = await ebay_upload.withdraw_offer(session, sku, token, base_url)
+                success = await ebay_upload.withdraw_offer(session, sku, token, base_url, isbn=item.get('isbn'))
                 
             if success:
                 await _mark_sold_on_bl(db_pool, internal_id) # Archivieren
@@ -379,7 +379,7 @@ async def process_item(
                 if listing_id:
                     success = await ebay_upload.end_item_by_id(session, listing_id, token)
                 else:
-                    success = await ebay_upload.withdraw_offer(session, sku, token, base_url)
+                    success = await ebay_upload.withdraw_offer(session, sku, token, base_url, isbn=item.get('isbn'))
                 
                 if success:
                     async with db_pool.acquire() as conn:
@@ -410,7 +410,7 @@ async def process_item(
                 if listing_id:
                     success = await ebay_upload.end_item_by_id(session, listing_id, token)
                 else:
-                    success = await ebay_upload.withdraw_offer(session, sku, token, base_url)
+                    success = await ebay_upload.withdraw_offer(session, sku, token, base_url, isbn=item.get('isbn'))
                     
                 if success:
                     await _mark_sold_on_bl(db_pool, internal_id)
@@ -665,7 +665,7 @@ async def main():
         # Alle gelisteten Artikel laden
         async with pool.acquire() as conn:
             query = """
-                SELECT id, sku, title, start_price, linktobl, ebay_listing_id,
+                SELECT id, isbn, sku, title, start_price, linktobl, ebay_listing_id,
                        purchase_price, purchase_shipping, is_private,
                        backup1_url, backup1_price, backup1_shipping, backup1_is_private,
                        backup2_url, backup2_price, backup2_shipping, backup2_is_private

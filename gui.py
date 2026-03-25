@@ -746,8 +746,12 @@ class BLBotApp(tb.Window):
             # (auch die von vorherigen Sessions)
             await scrape.scrape_and_save_pages(pool)
             
-            await scrape.perform_webscrape_async(pool)
+            # Detailverarbeitung starten (mit Quoten-Überwachung)
+            await scrape.perform_webscrape_async(pool, self.log_queue)
             
+            # Dashboard aktualisieren
+            self.after(0, self._refresh_dashboard)
+
             logging.info("Scraping erfolgreich abgeschlossen.")
             self.after(0, lambda: messagebox.showinfo("Erfolg", "Scraping abgeschlossen."))
         except asyncio.CancelledError:

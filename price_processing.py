@@ -111,19 +111,25 @@ class PriceProcessing:
             bl_cond = PriceProcessing._safe_extract_condition(soup)
             
             if not isbn:
-
-                logger.warning(f"[{num}] Keine ISBN auf Booklooker-Seite gefunden. Springe Konkurrenz-Check über.")
+                logger.info(f"[{num}] Keine ISBN auf Booklooker-Seite gefunden. Nutze Titel/Autor für Konkurrenz-Check.")
 
             # 2. Konkurrenz-Check (falls Token vorhanden)
             comp_data = {}
             recommended_p = None
-            if token and isbn and base_url:
-                comp_data = await PriceProcessing.get_competitor_prices(session, isbn, token, base_url, condition=bl_cond)
+            if token and base_url:
+                if isbn:
+                    comp_data = await PriceProcessing.get_competitor_prices(session, isbn, token, base_url, condition=bl_cond)
+                else:
+                    # Keyword-Suche via Titel + Autor
+                    title = PriceProcessing._safe_extract_title(soup)
+                    author = PriceProcessing._safe_extract_author(soup)
+                    if title:
+                        query = f"{title} {author}".strip()
+                        logger.info(f"[{num}] Suche ohne ISBN nach: {query}")
+                        comp_data = await PriceProcessing.get_competitor_prices(session, query, token, base_url, condition=bl_cond)
+                
                 if comp_data.get("gefunden"):
                     recommended_p = Decimal(str(comp_data.get("empfohlener_preis", "0")))
-                    
-                    # Empfohlener Preis wird basierend auf Faktoren (unten) berechnet
-                    pass
 
             # 3. Finalen eBay-Preis p bestimmen
             # Falls Empfehlung vorhanden, nehmen wir diese, sonst Standard-Kalkulation
@@ -199,7 +205,7 @@ class PriceProcessing:
                 db_pool=db_pool,
                 num=num,
                 final_price=final_price,
-                margin=Decimal(str(prof['marge'])),
+                margin=prof['marge'],
                 purchase_price=ek,
                 purchase_shipping=bl_shipping,
                 comp_data=comp_data,
@@ -215,6 +221,38 @@ class PriceProcessing:
         except Exception as e:
             logger.error(f"[{num}] Kritischer Fehler in PriceProcessing: {e}")
             return None
+
+    @staticmethod
+    def _safe_extract_title(soup) -> str | None:
+        try:
+            import re
+            property_items = soup.find_all(class_=re.compile(r"propertyItem_\d+"))
+            for item in property_items:
+                name_elem = item.find(class_="propertyName")
+                val_elem = item.find(class_="propertyValue")
+                if name_elem and val_elem:
+                    name = name_elem.text.strip()
+                    if name.lower().startswith("titel") or name.lower().startswith("buchtitel"):
+                        return val_elem.text.strip()
+            return None
+        except Exception:
+            return None
+
+    @staticmethod
+    def _safe_extract_author(soup) -> str:
+        try:
+            import re
+            property_items = soup.find_all(class_=re.compile(r"propertyItem_\d+"))
+            for item in property_items:
+                name_elem = item.find(class_="propertyName")
+                val_elem = item.find(class_="propertyValue")
+                if name_elem and val_elem:
+                    name = name_elem.text.strip()
+                    if name.lower().startswith("autor"):
+                        return val_elem.text.strip()
+            return ""
+        except Exception:
+            return ""
 
     @staticmethod
     def _safe_extract_isbn(soup) -> str | None:
@@ -454,13 +492,13 @@ class PriceProcessing:
         else:
             return Decimal(euros + 1) + Decimal('0.99')
     @staticmethod
-    async def get_competitor_prices(session: aiohttp.ClientSession, isbn: str, token: str, base_url: str, condition: str = 'unbekannt') -> dict:
+    async def get_competitor_prices(session: aiohttp.ClientSession, query_or_isbn: str, token: str, base_url: str, condition: str = 'unbekannt') -> dict:
         """
         Ruft Konkurrenzpreise über die eBay Browse API ab.
-        v2: Zustandsfilterung, Versandkosten-Obergrenze (5€), gestaffelter Seriositätsfilter, Ausreißer-Kappung.
+        Unterstützt ISBN oder Keyword-Suche.
         """
-        if not isbn:
-            return {"gefunden": False, "grund": "Keine ISBN"}
+        if not query_or_isbn:
+            return {"gefunden": False, "grund": "Kein Suchbegriff"}
 
         # Zustandsmapping
         ebay_condition_ids = PriceProcessing.CONDITION_MAP.get(condition.lower())
@@ -471,7 +509,7 @@ class PriceProcessing:
 
         search_url = f"{base_url}/buy/browse/v1/item_summary/search"
         params = {
-            "q": isbn,
+            "q": query_or_isbn,
             "category_ids": PriceProcessing.EBAY_CATEGORY_BOOKS,
             "filter": filter_str,
             "limit": "50"
@@ -498,10 +536,10 @@ class PriceProcessing:
                 logger = logging.getLogger(__name__)
 
                 if not items:
-                    logger.info(f"Keine Konkurrenzangebote auf eBay für ISBN {isbn} gefunden.")
+                    logger.info(f"Keine Konkurrenzangebote auf eBay für '{query_or_isbn}' gefunden.")
                     return {"gefunden": False, "anzahl_gesamt": 0}
 
-                logger.info(f"eBay Browse API: {len(items)} Angebote für ISBN {isbn} gefunden (Zustand: {condition}).")
+                logger.info(f"eBay Browse API: {len(items)} Angebote für '{query_or_isbn}' gefunden (Zustand: {condition}).")
                 
                 parsed_listings = []
 
@@ -658,13 +696,13 @@ class PriceProcessing:
 
         return {
             "rentabel": is_rentable,
-            "marge": float(gewinn_real.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "gewinn_brutto": float(gewinn_brutto.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "retouren_puffer": float(retouren_puffer.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "steuer_last": float(steuer_last.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "fehlende_marge": float(max(Decimal('0'), needed_diff).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "gebuehren": float(ebay_fees.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)),
-            "fixkosten_pro_item": float(fix_cost_per_item.quantize(Decimal('0.001'), rounding=ROUND_HALF_UP))
+            "marge": gewinn_real.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "gewinn_brutto": gewinn_brutto.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "retouren_puffer": retouren_puffer.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "steuer_last": steuer_last.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "fehlende_marge": max(Decimal('0'), needed_diff).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "gebuehren": ebay_fees.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            "fixkosten_pro_item": fix_cost_per_item.quantize(Decimal('0.001'), rounding=ROUND_HALF_UP)
         }
 
     @staticmethod
