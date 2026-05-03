@@ -524,9 +524,13 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
 
                 # Bilder extrahieren und speichern
                 # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
-                await picture_processing.PictureProcessing.get_pictures_with_dnb(
+                pics = await picture_processing.PictureProcessing.get_pictures_with_dnb(
                     session, soup, num, db_pool, isbn or ""
                 )
+
+                if not pics:
+                    logger.warning(f"[{num}] Abbruch der Detailverarbeitung: Keine Bilder vorhanden.")
+                    return "deleted_missing_photo"
 
                 if is_private_seller:
                     cond_norm = bl_processing.PropertyToDatabase._map_condition(props_raw.get("zustand:", ""))
@@ -625,7 +629,8 @@ async def process_library_links_async(db_pool):
             rows = await conn.fetch("""
                 SELECT id, LinkToBL, is_private 
                 FROM library 
-                WHERE (isbn IS NULL OR photo IS NULL OR photo = '')
+                WHERE (isbn IS NULL OR photo IS NULL OR photo = ''
+                       OR start_price IS NULL OR start_price <= 0)
                   AND (status_id IS NULL OR status_id IN (2, 7))
             """)
 

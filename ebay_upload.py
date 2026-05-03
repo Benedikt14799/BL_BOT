@@ -97,6 +97,10 @@ async def get_unlisted_books(db_pool, limit: int = 50, specific_ids: list = None
                 WHERE status_id = 1
                   AND (ebay_listed IS FALSE OR ebay_listed IS NULL)
                   AND (ebay_status IS NULL OR ebay_status != 'listed')
+                  AND start_price IS NOT NULL
+                  AND start_price > 0
+                  AND photo IS NOT NULL
+                  AND photo != ''
                 ORDER BY id DESC LIMIT $1
             """
             rows = await conn.fetch(query, limit)
@@ -212,6 +216,10 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
         for url in str(raw_photos).split('|')
         if url.strip() and url.strip().lower() != 'none'
     ]
+    
+    # [FIX] eBay erfordert zwingend mindestens ein Bild.
+    if not image_urls:
+        raise Exception("imageUrls cannot be null or empty. Upload übersprungen, da kein Bild in DB vorhanden.")
 
     # [BUG A] Description auf 4000 Zeichen begrenzen (Safety Limit für eBay)
     final_desc = html_description
