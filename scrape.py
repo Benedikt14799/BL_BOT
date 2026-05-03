@@ -15,7 +15,9 @@ from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 number_pattern = re.compile(r"\d+")
-semaphore = asyncio.Semaphore(15)
+
+# REDUZIERT für Booklooker-Stabilität (vorher 15)
+semaphore = asyncio.Semaphore(3)
 
 # Basis-URL für relative Pfade
 BASE_URL = "https://www.booklooker.de"
@@ -23,23 +25,34 @@ import os
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
-    GET-Request mit exponentiellem Backoff (3 Versuche), wirft bei Fehlern und liefert den HTML-Text.
+    GET-Request mit exponentiellem Backoff und Semaphor-Schutz.
+    Behandelt 503/429 mit längeren Pausen.
     """
     max_retries = 3
-    base_delay = 1
+    base_delay = 2
     
-    for attempt in range(max_retries + 1):
-        try:
-            async with session.get(url, timeout=30) as resp:
-                resp.raise_for_status()
-                return await resp.text()
-        except Exception as e:
-            if attempt == max_retries:
-                logger.error(f"Alle {max_retries} Retries für {url} fehlgeschlagen: {e}")
-                raise e
-            wait_time = base_delay * (2 ** attempt)
-            logger.warning(f"Fehler bei {url}: {e}. Retry {attempt + 1}/{max_retries} in {wait_time}s...")
-            await asyncio.sleep(wait_time)
+    async with semaphore:
+        for attempt in range(max_retries + 1):
+            try:
+                # Kleiner Jitter/Pause vor jedem Request
+                await asyncio.sleep(1.0) 
+                
+                async with session.get(url, timeout=30) as resp:
+                    if resp.status == 503 or resp.status == 429:
+                        wait = 60 * (attempt + 1) # 1, 2, 3 Minuten Pause
+                        logger.warning(f"Booklooker Blockade ({resp.status}). Pausiere für {wait}s...")
+                        await asyncio.sleep(wait)
+                        continue
+                        
+                    resp.raise_for_status()
+                    return await resp.text()
+            except Exception as e:
+                if attempt == max_retries:
+                    logger.error(f"Alle {max_retries} Retries für {url} fehlgeschlagen: {e}")
+                    raise e
+                wait_time = base_delay * (2 ** attempt)
+                logger.warning(f"Fehler bei {url}: {e}. Retry {attempt + 1}/{max_retries} in {wait_time}s...")
+                await asyncio.sleep(wait_time)
 
 
 def extract_offer_links_from_page(html: str) -> list[tuple[str, bool]]:
@@ -95,50 +108,49 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
     Gibt (link, highest_page, books_count) zurück.
     ROBUSTE Paginierung: erkennt 'page' aus Links und Text.
     """
-    async with semaphore:
-        try:
-            html = await fetch_html(session, link)
-            soup = BeautifulSoup(html, 'lxml')
+    try:
+        html = await fetch_html(session, link)
+        soup = BeautifulSoup(html, 'lxml')
 
-            # Bücheranzahl
-            div = soup.find('div', class_='resultlist_count')
-            books_count = int(number_pattern.search(div.text).group()) \
-                if div and number_pattern.search(div.text) else 0
+        # Bücheranzahl
+        div = soup.find('div', class_='resultlist_count')
+        books_count = int(number_pattern.search(div.text).group()) \
+            if div and number_pattern.search(div.text) else 0
 
-            # ROBUST: Seitenzahl
-            pages = set()
+        # ROBUST: Seitenzahl
+        pages = set()
 
-            # 1) Alle anklickbaren Links prüfen, ob sie page=<n> tragen
-            for a in soup.select('.pagelinks a, .PageNavNumItem a, a'):
-                href = a.get('href')
-                if not href:
-                    continue
+        # 1) Alle anklickbaren Links prüfen, ob sie page=<n> tragen
+        for a in soup.select('.pagelinks a, .PageNavNumItem a, a'):
+            href = a.get('href')
+            if not href:
+                continue
+            try:
+                parsed = urlparse(href)
+                qs = parse_qs(parsed.query)
+                p = qs.get('page', [])
+                if p and p[0].isdigit():
+                    pages.add(int(p[0]))
+            except Exception:
+                pass
+
+        # 2) zusätzlich Zahlen aus Navigations-Elementen lesen
+        for e in soup.select('.PageNavNumItem, .pagelinks, .pagination, .pagelinks_top, .pagelinks_bottom'):
+            txt = (e.get_text() or '').strip()
+            for m in re.findall(r'\b\d+\b', txt):
                 try:
-                    parsed = urlparse(href)
-                    qs = parse_qs(parsed.query)
-                    p = qs.get('page', [])
-                    if p and p[0].isdigit():
-                        pages.add(int(p[0]))
-                except Exception:
+                    pages.add(int(m))
+                except ValueError:
                     pass
 
-            # 2) zusätzlich Zahlen aus Navigations-Elementen lesen
-            for e in soup.select('.PageNavNumItem, .pagelinks, .pagination, .pagelinks_top, .pagelinks_bottom'):
-                txt = (e.get_text() or '').strip()
-                for m in re.findall(r'\b\d+\b', txt):
-                    try:
-                        pages.add(int(m))
-                    except ValueError:
-                        pass
+        highest_page = max(pages) if pages else 1
 
-            highest_page = max(pages) if pages else 1
+        logger.info(f"{link} → erkannte Seiten: {highest_page}, Bücher: {books_count}")
+        return link, highest_page, books_count
 
-            logger.info(f"{link} → erkannte Seiten: {highest_page}, Bücher: {books_count}")
-            return link, highest_page, books_count
-
-        except Exception as e:
-            logger.error(f"Fehler bei fetch_and_process für {link}: {e}")
-            return None
+    except Exception as e:
+        logger.error(f"Fehler bei fetch_and_process für {link}: {e}")
+        return None
 
 
 async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
@@ -470,6 +482,28 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     addcost_high=zusatzkosten_high,
                     steuer_satz=steuer_satz
                 )
+                
+                if prof is None:
+                    # Preis konnte nicht extrahiert werden -> filtern
+                    logger.warning(f"[{num}] Konnte Preis nicht verarbeiten. Verschiebe.")
+                    await DatabaseManager.record_missing_listing(db_pool, num, link, "price_extraction_error")
+                    return "error"
+
+                # Eigenschaften vorab auswerten, um Zustand und Titel zu prüfen
+                props_raw = bl_processing.PropertyExtractor.extract_property_items(soup)
+
+                # --- 💸 ARBITRAGE CHECK ---
+                # Dies passiert für ALLE Angebote mit ISBN (auch für "unrentable" eBay-Angebote oder private Anbieter ohne Backup)
+                import arbitrage_processing
+                await arbitrage_processing.check_arbitrage(
+                    db_pool=db_pool,
+                    library_id=num,
+                    isbn=isbn,
+                    bl_price=float(prof.get('ek_preis', 0.0)),
+                    bl_shipping=float(prof.get('versand', 0.0)),
+                    link=link,
+                    title=props_raw.get("titel:", "Unbekannt")
+                )
 
                 # Wenn unrentabel oder unrealistisch, in entsprechende Tabelle verschieben und aus library löschen
                 if prof and not prof.get('rentabel'):
@@ -493,9 +527,6 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                 await picture_processing.PictureProcessing.get_pictures_with_dnb(
                     session, soup, num, db_pool, isbn or ""
                 )
-
-                # Eigenschaften vorab auswerten, um Zustand etc. zu prüfen
-                props_raw = bl_processing.PropertyExtractor.extract_property_items(soup)
 
                 if is_private_seller:
                     cond_norm = bl_processing.PropertyToDatabase._map_condition(props_raw.get("zustand:", ""))

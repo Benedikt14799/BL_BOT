@@ -100,7 +100,7 @@ class PriceProcessing:
         """
         try:
             # 1. BL-Produkt- und Versandpreis extrahieren
-            ek = PriceProcessing._safe_clean_price(soup)
+            ek = PriceProcessing._safe_clean_price(soup, num=num)
             bl_shipping = PriceProcessing._safe_extract_shipping(soup)
             
             if ek <= Decimal('0.00'):
@@ -275,29 +275,39 @@ class PriceProcessing:
             return None
 
     @staticmethod
-    def _safe_clean_price(soup) -> Decimal:
+    def _safe_clean_price(soup, num=None) -> Decimal:
         if not soup: return Decimal('0.00')
         try:
-            import re
-            price_elem = soup.find(class_="priceValue")
+            # 1. Haupt-Selektor (altes Design: priceValue, neues Design: price-value)
+            price_elem = soup.find(class_=re.compile(r'price-?value', re.IGNORECASE))
+            
+            # Falls nicht gefunden, Fallback auf andere Klassen oder Texte
             if not price_elem:
+                # Manchmal ist der Preis in einem span hinter 'Preis:'
+                price_elem = soup.find(string=re.compile(r'Preis:'))
+                if price_elem:
+                    price_elem = price_elem.find_next(class_="propertyValue")
+
+            if not price_elem:
+                if num: logger.warning(f"[{num}] Preis-Element (.priceValue) nicht gefunden.")
                 return Decimal('0.00')
                 
-            raw_text = price_elem.text
+            raw_text = price_elem.text.strip()
             # 1. Alles in Klammern entfernen (oft NP oder ehem. Preise)
             text_no_parens = re.sub(r'\(.*?\)', '', raw_text)
             
             # 2. Den ersten validen Preis im Format XX,XX oder XX.XX finden
-            match = re.search(r'(\d+[\.,]\d{2})', text_no_parens)
+            # Erlaubt nun auch Preise ohne Nachkommastellen (z.B. "5 €")
+            match = re.search(r'(\d+[\.,]?\d{0,2})', text_no_parens)
             
             if match:
-                cleaned = match.group(1).replace(',', '.')
-                return Decimal(cleaned)
+                val = match.group(1).replace(',', '.')
+                # Sicherstellen, dass wir eine Zahl haben
+                if val.strip():
+                    return Decimal(val)
             
-            # Fallback: Falls die Suche oben fehlschlägt, den alten groben Ansatz nehmen
-            cleaned_fallback = re.sub(r'[^\d,]', '', text_no_parens).replace(',', '.')
-            if cleaned_fallback:
-                return Decimal(cleaned_fallback)
+            if num: logger.warning(f"[{num}] Preis konnte aus Text '{raw_text}' nicht extrahiert werden.")
+            return Decimal('0.00')
             
             return Decimal('0.00')
         except Exception:

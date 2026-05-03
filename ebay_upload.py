@@ -498,7 +498,7 @@ async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token:
         logger.warning(f"Fehler beim Erstellen der Mengenrabatt-Promotion: {e}")
 
 
-async def run_upload_batch(db_pool, specific_ids: list = None):
+async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
     from ebay_token_manager import get_token
     EBAY_USER_TOKEN = get_token()
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
@@ -536,7 +536,7 @@ async def run_upload_batch(db_pool, specific_ids: list = None):
         # 0. Sicherstellen, dass die globale Mengenrabatt-Promotion aktiv ist (5% ab 2 Artikeln)
         # await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
         
-        books = await get_unlisted_books(db_pool, specific_ids=specific_ids)
+        books = await get_unlisted_books(db_pool, specific_ids=specific_ids, limit=limit)
         
         if not books:
             logger.info("No unlisted books found.")

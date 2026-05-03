@@ -58,7 +58,8 @@ class BLBotApp(tb.Window):
         self.tab_upload = tb.Frame(self.container)
         self.tab_links = tb.Frame(self.container)
         self.tab_settings = tb.Frame(self.container)
-        self.tabs = [self.tab_dashboard, self.tab_upload, self.tab_links, self.tab_settings]
+        self.tab_arbitrage = tb.Frame(self.container)
+        self.tabs = [self.tab_dashboard, self.tab_upload, self.tab_links, self.tab_settings, self.tab_arbitrage]
         
         # Nav Buttons with physical Space (padx)
         self.nav_btns = []
@@ -66,7 +67,8 @@ class BLBotApp(tb.Window):
             ("🚀 Scraper Dashboard", self.tab_dashboard),
             ("📦 Upload Manager", self.tab_upload),
             ("🔗 Links", self.tab_links),
-            ("⚙️ Settings", self.tab_settings)
+            ("⚙️ Settings", self.tab_settings),
+            ("💰 Arbitrage Deals", self.tab_arbitrage)
         ]
         
         for i, (text, frame) in enumerate(btn_data):
@@ -85,6 +87,7 @@ class BLBotApp(tb.Window):
         self._build_upload_manager()
         self._build_links_tab()
         self._build_settings_tab()
+        self._build_arbitrage_tab()
         
         # Default tab
         self._switch_tab(0)
@@ -283,6 +286,10 @@ class BLBotApp(tb.Window):
         self.btn_upload = tb.Button(controls, text="Ausgewählte Hochladen", bootstyle=PRIMARY, command=self.upload_selected)
         self.btn_upload.pack(side=LEFT, padx=5)
 
+        self.btn_upload_all = tb.Button(controls, text="🚀 Alle Hochladen", bootstyle=SUCCESS, command=self.upload_all_backlog)
+        self.btn_upload_all.pack(side=LEFT, padx=5)
+        ToolTip(self.btn_upload_all, text="Lädt den gesamten Backlog (bis zu 5000 Artikel) auf einmal zu eBay hoch.")
+
         self.btn_delete = tb.Button(controls, text="🗑️ Ausgewählte Löschen", bootstyle=DANGER, command=self.delete_selected)
         self.btn_delete.pack(side=LEFT, padx=5)
         
@@ -430,6 +437,28 @@ class BLBotApp(tb.Window):
         self.settings_vars["FIXKOSTEN_MONATLICH"].trace_add("write", lambda *a: self._update_fixkosten_hint())
         self.settings_vars["ERWARTETE_VERKAEUFE"].trace_add("write", lambda *a: self._update_fixkosten_hint())
 
+        # Maintenance Section at the bottom of the container
+        maintenance_frame = tb.Labelframe(container, text=" Wartung & System ", padding=15)
+        maintenance_frame.pack(fill=X, side=BOTTOM, pady=(20, 0))
+        
+        btn_reactivate = tb.Button(
+            maintenance_frame, 
+            text="Gefilterte Links (Fehler) reaktivieren", 
+            bootstyle=SECONDARY, 
+            command=self._on_reactivate_filtered
+        )
+        btn_reactivate.pack(padx=10, pady=5)
+        ToolTip(btn_reactivate, text="Setzt nur die Links zurück, bei denen der Preis nicht gefunden wurde, damit diese erneut geprüft werden.")
+
+        btn_reset = tb.Button(
+            maintenance_frame, 
+            text="Datenbank vollständig zurücksetzen (DROP All)", 
+            bootstyle=DANGER, 
+            command=self._on_reset_database
+        )
+        btn_reset.pack(padx=10, pady=5)
+        ToolTip(btn_reset, text="Löscht alle Tabellen (library, sitetoscrape, sold_listings) und setzt die SKU-Sequenz zurück.")
+
     def _add_setting_row(self, parent_frame, label_text, var_key, row, is_secret=False, is_combobox=False, tooltip_text="", is_required=False):
         lbl_frame = tb.Frame(parent_frame)
         lbl_frame.grid(row=row, column=0, pady=10, sticky=W)
@@ -520,6 +549,48 @@ class BLBotApp(tb.Window):
         for key, var in self.settings_vars.items():
             val = os.environ.get(key, "")
             var.set(val)
+
+    def _on_reactivate_filtered(self):
+        """Setzt nur die fehlerhaft gefilterten Links zurück."""
+        async def do_reactivate():
+            pool = await self._get_db_pool()
+            if pool:
+                try:
+                    count_str = await DatabaseManager.reactivate_filtered_links(pool)
+                    # count_str ist meistens sowas wie "UPDATE 123"
+                    self.after(0, lambda: messagebox.showinfo("Erfolg", f"Gefilterte Links wurden zurückgesetzt.\nDetails: {count_str}"))
+                except Exception as e:
+                    logging.error(f"Reaktivierung fehlgeschlagen: {e}")
+                    self.after(0, lambda: messagebox.showerror("Fehler", f"Reaktivierung fehlgeschlagen: {e}"))
+        
+        asyncio.run_coroutine_threadsafe(do_reactivate(), self.loop)
+
+    def _on_reset_database(self):
+        """Handler für den Datenbank-Reset-Button mit Sicherheitsabfrage."""
+        confirm = messagebox.askyesno(
+            "Datenbank Reset bestätigen",
+            "Möchtest du wirklich die gesamte Datenbank löschen?\n\nAlle Bücher, Links, Tabellen und SKUs gehen unwiderruflich verloren!",
+            icon='warning'
+        )
+        
+        if confirm:
+            async def do_reset():
+                pool = await self._get_db_pool()
+                if pool:
+                    try:
+                        await DatabaseManager.reset_tables(pool)
+                        self.after(0, lambda: messagebox.showinfo("Erfolg", "Datenbank wurde erfolgreich zurückgesetzt."))
+                        # Dashboard aktualisieren falls nötig
+                        if hasattr(self, '_update_dashboard_stats'):
+                            await self._update_dashboard_stats()
+                    except Exception as e:
+                        err_msg = repr(e)
+                        logging.error(f"Reset fehlgeschlagen: {err_msg}")
+                        self.after(0, lambda msg=err_msg: messagebox.showerror("Fehler", f"Reset fehlgeschlagen: {msg}"))
+                else:
+                    self.after(0, lambda: messagebox.showerror("Fehler", "Keine Datenbankverbindung vorhanden."))
+
+            asyncio.run_coroutine_threadsafe(do_reset(), self.loop)
 
     def _update_fixkosten_hint(self):
         try:
@@ -699,6 +770,7 @@ class BLBotApp(tb.Window):
         if not pool: return
         
         self.after(0, lambda: self.btn_upload.configure(state='disabled', text="Uploading..."))
+        self.after(0, lambda: self.btn_upload_all.configure(state='disabled'))
         try:
             await ebay_upload.run_upload_batch(pool, specific_ids=ids)
             self.after(0, lambda: messagebox.showinfo("Erfolg", "Upload abgeschlossen. Details findest du in den Logs."))
@@ -707,6 +779,28 @@ class BLBotApp(tb.Window):
             self.after(0, lambda: messagebox.showerror("Fehler", f"Upload fehlgeschlagen: {e}"))
         finally:
             self.after(0, lambda: self.btn_upload.configure(state='normal', text="Ausgewählte Hochladen"))
+            self.after(0, lambda: self.btn_upload_all.configure(state='normal'))
+
+    def upload_all_backlog(self):
+        if messagebox.askyesno("Confirm", "Möchtest du den gesamten Backlog zu eBay hochladen? (Max. 5000 Artikel)"):
+            asyncio.run_coroutine_threadsafe(self._upload_all_task(), self.loop)
+
+    async def _upload_all_task(self):
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        self.after(0, lambda: self.btn_upload_all.configure(state='disabled', text="🚀 Upload läuft..."))
+        self.after(0, lambda: self.btn_upload.configure(state='disabled'))
+        try:
+            logging.info("Starte Massen-Upload für den gesamten Backlog...")
+            await ebay_upload.run_upload_batch(pool, limit=5000)
+            self.after(0, lambda: messagebox.showinfo("Erfolg", "Massen-Upload abgeschlossen. Details in den Logs."))
+            await self._refresh_task()
+        except Exception as e:
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Massen-Upload fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_upload_all.configure(state='normal', text="🚀 Alle Hochladen"))
+            self.after(0, lambda: self.btn_upload.configure(state='normal'))
 
     def sync_prices(self):
         self.start_price_sync()
@@ -747,7 +841,7 @@ class BLBotApp(tb.Window):
             await scrape.scrape_and_save_pages(pool)
             
             # Detailverarbeitung starten (mit Quoten-Überwachung)
-            await scrape.perform_webscrape_async(pool, self.log_queue)
+            await scrape.perform_webscrape_async(pool)
             
             # Dashboard aktualisieren
             self.after(0, self._refresh_dashboard)
@@ -831,6 +925,133 @@ class BLBotApp(tb.Window):
         finally:
             self.after(0, lambda: self.btn_inventory_sync.configure(state='normal', text="📦 Bestandsabgleich (eBay)"))
 
+    def _build_arbitrage_tab(self):
+        lbl = tb.Label(self.tab_arbitrage, text="💰 Gefundene Arbitrage Deals", font=("Segoe UI", 18, "bold"))
+        lbl.pack(pady=15)
+        
+        btn_frame = tb.Frame(self.tab_arbitrage)
+        btn_frame.pack(fill='x', padx=20, pady=5)
+        
+        tb.Button(btn_frame, text="🔄 Liste aktualisieren", command=self._refresh_arbitrage_table, bootstyle='primary').pack(side='left', padx=5)
+        
+        self.btn_check_history = tb.Button(btn_frame, text="🔍 Alten Bestand prüfen", command=self._start_historical_arbitrage_check, bootstyle='info')
+        self.btn_check_history.pack(side='left', padx=15)
+        
+        self.lbl_arbitrage_total = tb.Label(btn_frame, text="Gesamtgewinn: 0.00 €", font=("Segoe UI", 12, "bold"), bootstyle='success')
+        self.lbl_arbitrage_total.pack(side='right', padx=20)
+        
+        columns = ('id', 'title', 'isbn', 'bl_price', 'momox_price', 'profit', 'link')
+        self.tree_arb = tb.Treeview(self.tab_arbitrage, columns=columns, show='headings', bootstyle='success')
+        
+        self.tree_arb.heading('id', text='ID')
+        self.tree_arb.heading('title', text='Titel')
+        self.tree_arb.heading('isbn', text='ISBN')
+        self.tree_arb.heading('bl_price', text='Kaufpreis (BL)')
+        self.tree_arb.heading('momox_price', text='Ankauf (Momox)')
+        self.tree_arb.heading('profit', text='💰 Gewinn')
+        self.tree_arb.heading('link', text='Link')
+        
+        self.tree_arb.column('id', width=50, anchor='center')
+        self.tree_arb.column('title', width=300)
+        self.tree_arb.column('isbn', width=120, anchor='center')
+        self.tree_arb.column('bl_price', width=100, anchor='e')
+        self.tree_arb.column('momox_price', width=120, anchor='e')
+        self.tree_arb.column('profit', width=100, anchor='e')
+        self.tree_arb.column('link', width=100, anchor='center')
+        
+        self.tree_arb.pack(fill='both', expand=True, padx=20, pady=10)
+        
+        # Double click to open link
+        self.tree_arb.bind('<Double-1>', self._open_arbitrage_link)
+
+    def _refresh_arbitrage_table(self):
+        for row in self.tree_arb.get_children():
+            self.tree_arb.delete(row)
+            
+        async def fetch_deals():
+            pool = await self._get_db_pool()
+            if pool:
+                async with pool.acquire() as conn:
+                    rows = await conn.fetch("SELECT * FROM arbitrage_deals ORDER BY profit DESC")
+                    total_profit = sum(float(r['profit']) for r in rows if r['profit'])
+                    self.after(0, lambda: self._update_arb_tree(rows, total_profit))
+                    
+        asyncio.run_coroutine_threadsafe(fetch_deals(), self.loop)
+        
+    def _update_arb_tree(self, rows, total_profit):
+        self.lbl_arbitrage_total.configure(text=f"Gesamtgewinn: {total_profit:.2f} €")
+        for r in rows:
+            self.tree_arb.insert('', 'end', values=(
+                r['id'], 
+                r['title'][:50] + '...' if len(r.get('title','')) > 50 else r.get('title',''), 
+                r['isbn'], 
+                f"{r['bl_total_price']} €", 
+                f"{r['momox_price']} €", 
+                f"{r['profit']} €", 
+                r['link']
+            ))
+
+    def _open_arbitrage_link(self, event):
+        item = self.tree_arb.selection()
+        if item:
+            link = self.tree_arb.item(item[0], "values")[6]
+            import webbrowser
+            webbrowser.open(link)
+
+    def _start_historical_arbitrage_check(self):
+        if messagebox.askyesno("Bestand prüfen", "Sollen alle vorhandenen Bücher in der Datenbank auf Arbitrage-Deals geprüft werden?\n\nDies kann bei vielen Büchern einige Zeit dauern (ca. 1-2 Sekunden pro Buch)."):
+            self.btn_check_history.configure(state='disabled', text="⌛ Prüfung läuft...")
+            asyncio.run_coroutine_threadsafe(self._historical_arbitrage_task(), self.loop)
+
+    async def _historical_arbitrage_task(self):
+        try:
+            pool = await self._get_db_pool()
+            if not pool: return
+            
+            async with pool.acquire() as conn:
+                # Hole alle Bücher mit ISBN und Preis
+                rows = await conn.fetch("""
+                    SELECT id, isbn, start_price, purchase_shipping, linktobl, title 
+                    FROM library 
+                    WHERE isbn IS NOT NULL AND isbn != '' 
+                      AND start_price IS NOT NULL
+                """)
+            
+            total = len(rows)
+            logging.info(f"Starte historischen Arbitrage-Check für {total} Bücher...")
+            
+            import arbitrage_processing
+            import asyncio
+            
+            checked = 0
+            deals_found = 0
+            
+            for row in rows:
+                bl_total = float(row['start_price']) + float(row['purchase_shipping'] or 0.0)
+                await arbitrage_processing.check_arbitrage(
+                    db_pool=pool,
+                    library_id=row['id'],
+                    isbn=row['isbn'],
+                    bl_price=float(row['start_price']),
+                    bl_shipping=float(row['purchase_shipping'] or 0.0),
+                    link=row['linktobl'],
+                    title=row['title']
+                )
+                checked += 1
+                if checked % 50 == 0:
+                    logging.info(f"Arbitrage-Check: {checked}/{total} geprüft...")
+                
+                # Kurze Pause um Momox Rate-Limits / Cloudflare zu schonen
+                await asyncio.sleep(1.5)
+                
+            logging.info("Historischer Arbitrage-Check abgeschlossen!")
+            self.after(0, lambda: messagebox.showinfo("Erfolg", "Die Überprüfung des Altbestands ist abgeschlossen! Klicke auf 'Liste aktualisieren'."))
+            
+        except Exception as e:
+            logging.error(f"Fehler beim historischen Arbitrage-Check: {e}")
+            self.after(0, lambda: messagebox.showerror("Fehler", f"Check fehlgeschlagen: {e}"))
+        finally:
+            self.after(0, lambda: self.btn_check_history.configure(state='normal', text="🔍 Alten Bestand prüfen"))
 
 if __name__ == "__main__":
     app = BLBotApp()
