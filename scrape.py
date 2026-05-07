@@ -649,17 +649,19 @@ async def process_library_links_async(db_pool):
         else:
             logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge…")
 
-        processed = 0
+        total_ok = 0
+        total_filtered = 0
+        total_errors = 0
+        
         async with aiohttp.ClientSession() as session:
             from ebay_analytics import has_sufficient_quota
             
             # in Batches verarbeiten
             for i in range(0, total_to_process, BATCH_SIZE):
-                # RATE LIMIT CHECK (Dazu gekommen für Auto-Scraper)
+                # RATE LIMIT CHECK
                 can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=BATCH_SIZE)
                 if not can_continue:
-                    logger.warning(f"eBay API Limit fast erreicht ({remaining} übrig). Auto-Scraper pausiert bis zum Reset: {reset_time}")
-                    # Wir brechen den Loop ab, sodass beim nächsten Start genau hier weitergemacht wird.
+                    logger.warning(f"eBay API Limit fast erreicht. Pause...")
                     break
 
                 batch = rows[i: i + BATCH_SIZE]
@@ -672,14 +674,21 @@ async def process_library_links_async(db_pool):
 
                 # Zählen/Loggen
                 ok = sum(1 for r in results if r == "ok")
-                num_filtered = sum(1 for r in results if r in ("filtered", "deleted_unrealistic", "deleted_unprofitable", "deleted_no_backup", "deleted_schlechte_bewertung"))
+                num_filtered = sum(1 for r in results if r in ("filtered", "deleted_unrealistic", "deleted_unprofitable", "deleted_no_backup", "deleted_schlechte_bewertung", "deleted_missing_photo"))
                 errors = sum(1 for r in results if r == "error" or isinstance(r, Exception))
 
+                total_ok += ok
+                total_filtered += num_filtered
+                total_errors += errors
+                
                 processed += len(batch)
                 logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, gefiltert={num_filtered}, errors={errors})")
 
+        return {"ok": total_ok, "filtered": total_filtered, "errors": total_errors}
+
     except Exception as e:
         logger.error(f"Fehler in process_library_links_async: {e}")
+        return {"ok": 0, "filtered": 0, "errors": 1}
 
 
 async def perform_webscrape_async(db_pool, category_name: str = "/Bücher & Zeitschriften/Bücher"):
@@ -693,10 +702,11 @@ async def perform_webscrape_async(db_pool, category_name: str = "/Bücher & Zeit
         await DatabaseManager.prefill_db_with_static_data(db_pool, category_name)
 
         # Detailverarbeitung
-        await process_library_links_async(db_pool)
+        return await process_library_links_async(db_pool)
 
     except Exception as e:
         logger.error(f"Fehler in perform_webscrape_async: {e}")
+        return {"ok": 0, "filtered": 0, "errors": 1}
 
 
 # ===============================

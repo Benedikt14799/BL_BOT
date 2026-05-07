@@ -21,15 +21,11 @@ import ebay_upload
 logger = logging.getLogger("Vacation-Reactivate")
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
 
-async def main():
-    logger.info("============================================================")
+async def reactivate_vacation(pool):
+    """Prüft pausierte Artikel und reaktiviert sie, wenn der Urlaub vorbei ist."""
     logger.info("BookLooker Urlaubs-Reaktivierung gestartet")
-    logger.info("============================================================")
     
-    db_url = os.getenv("DATABASE_URL")
-    pool = await DatabaseManager.create_pool(db_url)
-    
-    # 1. Alle pausierten Artikel finden, deren Urlaubs-Datum abgelaufen ist oder heute ist
+    # 1. Alle pausierten Artikel finden
     query = """
         SELECT id, sku, title, linktobl, vacation_until 
         FROM library 
@@ -42,12 +38,10 @@ async def main():
     
     if not items:
         logger.info("Keine Artikel zur Reaktivierung gefunden.")
-        await pool.close()
-        return
+        return {"found": 0, "reactivated": 0}
 
     logger.info(f"{len(items)} potenzielle Artikel zur Reaktivierung gefunden.")
-    
-    reactivated_ids = []
+    reactivated_count = 0
     
     async with aiohttp.ClientSession() as session:
         for record in items:
@@ -55,35 +49,32 @@ async def main():
             sku = item["sku"]
             bl_url = item["linktobl"]
             
-            logger.info(f"Prüfe [{sku}] {item['title']} ...")
-            
             html = await fetch_bl_html(session, bl_url)
-            if not html:
-                continue
+            if not html: continue
                 
             soup = BeautifulSoup(html, "html.parser")
             ek = PriceProcessing._safe_clean_price(soup)
-            
             status, info = is_sold(html, soup, ek)
             
             if status == "OK":
-                logger.info(f"✅ [{sku}] ist wieder verfügbar! Markiere für Reaktivierung.")
+                logger.info(f"✅ [{sku}] ist wieder verfügbar!")
                 async with pool.acquire() as conn:
                     await conn.execute(
                         "UPDATE library SET ebay_status = 'pending', vacation_until = NULL WHERE id = $1",
                         item["id"]
                     )
-                reactivated_ids.append(item["id"])
-            elif status == "VACATION":
-                logger.info(f"⏳ [{sku}] weiterhin im Urlaub bis {info}.")
-            else:
-                logger.info(f"❌ [{sku}] scheint mittlerweile verkauft zu sein.")
+                reactivated_count += 1
+                
+    return {"found": len(items), "reactivated": reactivated_count}
 
-    if reactivated_ids:
-        logger.info(f"Artikel wurden auf 'pending' gesetzt und werden beim nächsten Upload-Lauf berücksichtigt.")
-        
-    await pool.close()
-    logger.info("Reaktivierungs-Lauf beendet.")
+async def main():
+    db_url = os.getenv("DATABASE_URL")
+    pool = await DatabaseManager.create_pool(db_url)
+    try:
+        results = await reactivate_vacation(pool)
+        logger.info(f"Reaktivierung beendet. {results['reactivated']} von {results['found']} reaktiviert.")
+    finally:
+        await pool.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

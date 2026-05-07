@@ -124,6 +124,7 @@ async def cleanup():
                         new_p = pp._round_x99_up(median_p * Decimal('0.99'))
                         reprice_list.append({
                             "id": num,
+                            "sku": row.get("sku"),
                             "isbn": isbn,
                             "title": title,
                             "old_p": float(current_p),
@@ -134,6 +135,7 @@ async def cleanup():
                     else:
                         delist_list.append({
                             "id": num,
+                            "sku": row.get("sku"),
                             "isbn": isbn,
                             "title": title,
                             "current_p": float(current_p),
@@ -168,7 +170,7 @@ async def cleanup():
 
                 for item in reprice_list:
                     # 1. eBay Preis-Update
-                    target_sku = item["isbn"]
+                    target_sku = item.get("sku") or item.get("isbn")
                     if target_sku:
                         ebay_base = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
                         try:
@@ -188,7 +190,7 @@ async def cleanup():
                     
                 for item in delist_list:
                     # 1. eBay Listing beenden
-                    target_sku = item["isbn"]
+                    target_sku = item.get("sku") or item.get("isbn")
                     
                     if target_sku:
                         ebay_base = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")

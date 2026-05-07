@@ -359,6 +359,7 @@ class DatabaseManager:
                     UPDATE library 
                     SET status_id = 2, 
                         ebay_error = $2,
+                        ebay_listed = FALSE,
                         last_checked = NOW()
                     WHERE id = $1
                 """, library_id, reason)
@@ -377,6 +378,7 @@ class DatabaseManager:
                     UPDATE library 
                     SET status_id = 3,
                         rentabel = FALSE,
+                        ebay_listed = FALSE,
                         start_price = $2,
                         margin = $3,
                         ebay_error = $4,
@@ -397,6 +399,7 @@ class DatabaseManager:
                 await conn.execute("""
                     UPDATE library 
                     SET status_id = 5,
+                        ebay_listed = FALSE,
                         ebay_delisted_reason = $2,
                         last_checked = NOW()
                     WHERE id = $1

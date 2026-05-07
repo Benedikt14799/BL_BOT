@@ -28,15 +28,37 @@ class TextHandler(logging.Handler):
     def __init__(self, text_widget):
         super().__init__()
         self.text_widget = text_widget
+        self.buffer = []
+        self.update_pending = False
 
     def emit(self, record):
         msg = self.format(record)
-        def append():
-            self.text_widget.configure(state='normal')
-            self.text_widget.insert(tk.END, msg + '\n')
-            self.text_widget.configure(state='disabled')
-            self.text_widget.yview(tk.END)
-        self.text_widget.after(0, append)
+        self.buffer.append(msg)
+        if not self.update_pending:
+            self.update_pending = True
+            self.text_widget.after(200, self.flush)
+
+    def flush(self):
+        if not self.buffer:
+            self.update_pending = False
+            return
+            
+        msgs = '\n'.join(self.buffer) + '\n'
+        self.buffer.clear()
+        
+        self.text_widget.configure(state='normal')
+        self.text_widget.insert(tk.END, msgs)
+        
+        # Begrenze Zeilenanzahl auf ca. 5000, um Speicher zu schonen
+        try:
+            if float(self.text_widget.index('end-1c')) > 5000:
+                self.text_widget.delete('1.0', 'end-5000l')
+        except Exception:
+            pass
+            
+        self.text_widget.configure(state='disabled')
+        self.text_widget.yview(tk.END)
+        self.update_pending = False
 
 class BLBotApp(tb.Window):
     def __init__(self):

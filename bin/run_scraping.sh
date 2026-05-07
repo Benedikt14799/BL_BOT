@@ -26,13 +26,15 @@ summary_line="$(grep -a 'SCRAPE_SUMMARY ' "$LOG" | tail -n 1 || true)"
 
 links_total="$(echo "$summary_line" | sed -n 's/.*links_total=\([0-9]\+\).*/\1/p')"
 items_saved="$(echo "$summary_line" | sed -n 's/.*items_saved=\([0-9]\+\).*/\1/p')"
+filtered="$(echo "$summary_line" | sed -n 's/.*filtered=\([0-9]\+\).*/\1/p')"
 errors_count="$(echo "$summary_line" | sed -n 's/.*errors=\([0-9]\+\).*/\1/p')"
 duration_s="$(echo "$summary_line" | sed -n 's/.*duration_s=\([0-9]\+\).*/\1/p')"
 
-links_total="${links_total:-?}"
-items_saved="${items_saved:-?}"
-errors_count="${errors_count:-?}"
-duration_s="${duration_s:-?}"
+links_total="${links_total:-0}"
+items_saved="${items_saved:-0}"
+filtered="${filtered:-0}"
+errors_count="${errors_count:-0}"
+duration_s="${duration_s:-0}"
 
 if [[ "$duration_s" =~ ^[0-9]+$ ]]; then
   printf -v dur_fmt '%02dm %02ds' $((duration_s/60)) $((duration_s%60))
@@ -41,21 +43,22 @@ else
 fi
 
 if [ "$code" -eq 0 ]; then
-  $PY bin/notify.py "✅ *BL_BOT – Scraping erfolgreich*
-• Dauer: $dur_fmt
-• Links (aus links.txt): *$links_total*
-• Items gespeichert: *$items_saved*
-• Fehler: *$errors_count*
-• Host: \`$HOST\`
-• Log: \`$LOG\`" >> "$LOG" 2>&1 || true
+  $PY bin/notify.py "🔍 *BL_BOT: Scraping Report*
+📥 *Neu:* $items_saved Bücher eingelesen
+🛒 *Bereit:* $items_saved (für eBay qualifiziert)
+✂️ *Gefiltert:* $filtered Bücher (Marge/Zustand)
+⚠️ *Fehler:* $errors_count
+
+⏱️ *Dauer:* $dur_fmt
+💻 *Host:* \`$HOST\`" >> "$LOG" 2>&1 || true
   exit 0
 else
-  $PY bin/notify.py "❌ *BL_BOT – Scraping FEHLER* (exit $code)
-• Dauer: $dur_fmt
-• Links (aus links.txt): *$links_total*
-• Items gespeichert: *$items_saved*
-• Fehler: *$errors_count*
-• Host: \`$HOST\`
-• Log: \`$LOG\`" >> "$LOG" 2>&1 || true
+  $PY bin/notify.py "❌ *BL_BOT: Scraping FEHLER* (exit $code)
+📥 *Eingelesen:* $items_saved
+✂️ *Gefiltert:* $filtered
+⚠️ *Fehler:* $errors_count
+
+⏱️ *Dauer:* $dur_fmt
+💻 *Host:* \`$HOST\`" >> "$LOG" 2>&1 || true
   exit "$code"
 fi

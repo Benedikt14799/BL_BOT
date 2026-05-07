@@ -64,7 +64,11 @@ async def main():
 
         await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool)
         await scrape.scrape_and_save_pages(db_pool)
-        await scrape.perform_webscrape_async(db_pool)
+        results = await scrape.perform_webscrape_async(db_pool)
+        
+        items_saved = results.get("ok", 0)
+        filtered = results.get("filtered", 0)
+        errors = results.get("errors", 0)
 
         upload_to_ebay = os.environ.get("UPLOAD_TO_EBAY", "").lower() == "true"
         if upload_to_ebay:
@@ -75,7 +79,7 @@ async def main():
 
     except Exception:
         logger.exception("Unbehandelter Fehler in main.py")
-        errors = 1
+        errors += 1
         raise
     finally:
         if db_pool is not None:
@@ -84,9 +88,7 @@ async def main():
         duration_s = int(round(time.time() - start_time))
         logger.info("Die Ausführungszeit beträgt: {:.2f} Sekunden".format(time.time() - start_time))
 
-        # items_saved is unknown with current code -> 0 for now (honest + stable)
-        items_saved = 0
-        print(f"SCRAPE_SUMMARY links_total={links_total} items_saved={items_saved} errors={errors} duration_s={duration_s}")
+        print(f"SCRAPE_SUMMARY links_total={links_total} items_saved={items_saved} filtered={filtered} errors={errors} duration_s={duration_s}")
 
 
 if __name__ == "__main__":

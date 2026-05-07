@@ -126,8 +126,8 @@ async def create_inventory_item(session: aiohttp.ClientSession, book_data: dict,
     condition = map_ebay_condition(book_data.get('bl_condition'))
     
     aspects = {}
-    if book_data.get('sprache'):
-        aspects['Sprache'] = [str(book_data['sprache'])[:65]]
+    lang = book_data.get('sprache') or "Keine Sprache angegeben"
+    aspects['Sprache'] = [str(lang)[:65]]
     
     # [BUG E] Autor ist Pflichtfeld für Bücher (268)
     author_raw = book_data.get('autor') or ''
@@ -419,31 +419,48 @@ async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, 
     isbn = book_data['isbn']
     title = book_data.get('title', 'Unknown Title')
     
-    try:
-        async with upload_semaphore:
-            logger.info(f"Uploading Item {internal_id} (SKU: {book_data['sku']}, ISBN: {isbn or 'NONE'}) - {title[:30]}...")
-            
-            # Step 1
-            await create_inventory_item(session, book_data, token, base_url)
-            
-            # Step 2
-            offer_id = await create_offer(session, book_data, token, base_url, policies)
-            if not offer_id:
-                raise Exception("No Offer ID returned.")
-            
-            # Step 3
-            listing_id = await publish_offer(session, offer_id, token, base_url)
-            if not listing_id:
-                raise Exception("No Listing ID returned.")
-            
-            # Update DB
-            await mark_as_listed(db_pool, internal_id, listing_id)
-            logger.info(f"SUCCESS: Item {internal_id} listed as {listing_id}")
+    max_retries = 3
+    retry_delay = 2 # Sekunden
+    
+    for attempt in range(max_retries):
+        try:
+            async with upload_semaphore:
+                logger.info(f"Uploading Item {internal_id} (SKU: {book_data['sku']}) - Attempt {attempt+1}...")
+                
+                # Step 1: Create Inventory Item
+                await create_inventory_item(session, book_data, token, base_url)
+                
+                # Kurze Pause für eBay-Indexing (verhindert "Availability not found")
+                await asyncio.sleep(1.5)
+                
+                # Step 2: Create Offer
+                offer_id = await create_offer(session, book_data, token, base_url, policies)
+                if not offer_id:
+                    raise Exception("No Offer ID returned.")
+                
+                # Step 3: Publish Offer
+                listing_id = await publish_offer(session, offer_id, token, base_url)
+                if not listing_id:
+                    raise Exception("No Listing ID returned.")
+                
+                # Update DB
+                await mark_as_listed(db_pool, internal_id, listing_id)
+                logger.info(f"SUCCESS: Item {internal_id} listed as {listing_id}")
+                return True # Erfolg -> raus aus der Retry-Schleife
 
-    except Exception as e:
-        error_str = str(e)
-        logger.error(f"FAILED: Item {internal_id} - {error_str}")
-        await mark_as_error(db_pool, internal_id, error_str)
+        except Exception as e:
+            error_str = str(e)
+            # Bei Server-Fehlern (500, 503) oder Netzwerkproblemen versuchen wir es nochmal
+            if attempt < max_retries - 1 and any(err in error_str for err in ["500", "503", "connection", "reset", "timeout"]):
+                logger.warning(f"Transient error for Item {internal_id}: {error_str}. Retrying in {retry_delay}s...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2 # Exponential Backoff
+                continue
+            
+            # Finaler Fehler
+            logger.error(f"FAILED: Item {internal_id} after {attempt+1} attempts - {error_str}")
+            await mark_as_error(db_pool, internal_id, error_str)
+            return False
 
 
 async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token: str, base_url: str):
@@ -507,13 +524,13 @@ async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token:
 
 
 async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
-    from ebay_token_manager import get_token
+    from ebay_token_manager import get_token, force_refresh_token
     EBAY_USER_TOKEN = get_token()
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")
     EBAY_PAYMENT_POLICY_ID = os.environ.get("EBAY_PAYMENT_POLICY_ID")
     EBAY_RETURN_POLICY_ID = os.environ.get("EBAY_RETURN_POLICY_ID")
     # Default safely to sandbox, but warn if we expect production
-    EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.sandbox.ebay.com")
+    EBAY_BASE_URL = os.environ.get("EBAY_BASE_URL", "https://api.sandbox.ebay.com").strip().strip('\'"')
     
     if "sandbox" not in EBAY_BASE_URL.lower():
         logger.info("PRODUCTION MODE: Uploading to real eBay Marketplace.")
@@ -533,22 +550,24 @@ async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
         'EBAY_RETURN_POLICY_ID': EBAY_RETURN_POLICY_ID
     }
 
+    success_count = 0
+    fail_count = 0
+    
     async with aiohttp.ClientSession() as session:
         # Token Validation before starting
         if not await validate_token(session, EBAY_USER_TOKEN, EBAY_BASE_URL):
-            logger.error("eBay Token ist ungültig oder abgelaufen! Bitte in der GUI (Settings) erneuern.")
-            return
+            logger.warning("eBay Token scheint ungültig. Erzwinge Refresh...")
+            EBAY_USER_TOKEN = force_refresh_token()
+            if not await validate_token(session, EBAY_USER_TOKEN, EBAY_BASE_URL):
+                logger.error("eBay Token ist ungültig oder abgelaufen! Bitte in der GUI (Settings) erneuern.")
+                return {"success": 0, "failed": 1, "skipped": 0}
 
         logger.info("Starting eBay Upload Batch...")
-        
-        # 0. Sicherstellen, dass die globale Mengenrabatt-Promotion aktiv ist (5% ab 2 Artikeln)
-        # await ensure_volume_pricing_promotion(session, EBAY_USER_TOKEN, EBAY_BASE_URL)
-        
         books = await get_unlisted_books(db_pool, specific_ids=specific_ids, limit=limit)
         
         if not books:
             logger.info("No unlisted books found.")
-            return
+            return {"success": 0, "failed": 0, "skipped": 0}
 
         logger.info(f"Found {len(books)} books to upload.")
 
@@ -556,9 +575,37 @@ async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
             asyncio.create_task(_process_single_book(session, book, db_pool, EBAY_USER_TOKEN, EBAY_BASE_URL, policies))
             for book in books
         ]
-        await asyncio.gather(*tasks, return_exceptions=True)
-    
-    logger.info("eBay Upload Batch Finished.")
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        error_counts = {}
+        for r in results:
+            if r is True:
+                success_count += 1
+            else:
+                fail_count += 1
+                # r könnte ein bool (False) oder eine Exception sein
+                err_msg = "Unbekannter Fehler"
+                if isinstance(r, Exception):
+                    err_msg = str(r)
+                elif hasattr(r, 'message'): # falls es ein spezielles Error-Objekt ist
+                    err_msg = r.message
+                
+                # Fehlermeldung kürzen und gruppieren (z.B. Sprache fehlt)
+                if "Sprache" in err_msg: err_msg = "Sprache fehlt"
+                elif "503" in err_msg: err_msg = "eBay Server (503)"
+                elif "500" in err_msg: err_msg = "eBay Server (500)"
+                elif "Availability" in err_msg: err_msg = "Timing/Availability"
+                
+                error_counts[err_msg] = error_counts.get(err_msg, 0) + 1
+
+    top_error = "Keine"
+    if error_counts:
+        top_error = max(error_counts, key=error_counts.get)
+        if error_counts[top_error] > 1:
+            top_error = f"{top_error} ({error_counts[top_error]}x)"
+
+    logger.info(f"eBay Upload Batch Finished. Success: {success_count}, Failed: {fail_count}, Top Error: {top_error}")
+    return {"success": success_count, "failed": fail_count, "skipped": 0, "top_error": top_error}
 
 
 async def update_inventory_price(session: aiohttp.ClientSession, sku: str, new_price: float, token: str, base_url: str, isbn: str = None) -> bool:

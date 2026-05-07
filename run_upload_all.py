@@ -44,7 +44,8 @@ async def main():
         await pool.close()
 
     duration_s = int(round(time.time() - start))
-    print(f"UPLOAD_SUMMARY success={success} failed={failed} skipped={skipped} duration_s={duration_s}")
+    top_err = result.get("top_error", "None") if isinstance(result, dict) else "None"
+    print(f"UPLOAD_SUMMARY success={success} failed={failed} skipped={skipped} duration_s={duration_s} top_error='{top_err}'")
 
 
 if __name__ == "__main__":

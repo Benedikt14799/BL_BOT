@@ -634,32 +634,16 @@ async def worker(
             queue.task_done()
 
 
-async def main():
-    """Einmal-Durchlauf: Alle eBay-gelisteten Artikel prüfen."""
+async def run_sync(pool):
+    """Gleicht alle eBay-gelisteten Artikel gegen BookLooker ab."""
     logger.info("=" * 60)
     logger.info("BookLooker ↔ eBay Bestandsabgleich gestartet (PARALLEL)")
     logger.info("=" * 60)
 
-    db_url = os.environ.get("DATABASE_URL")
-    if not db_url:
-        logger.error("DATABASE_URL fehlt! Abbruch.")
-        return
-
-    pool = await DatabaseManager.create_pool(db_url)
-    if not pool:
-        logger.error("Datenbank-Pool konnte nicht erstellt werden.")
-        return
-
-    # Tabellen-Migration ausführen (stellt sicher, dass last_checked existiert)
-    await DatabaseManager.create_table(pool)
-
     # Kostenparameter laden
     cost_params = _get_cost_params()
-    logger.info(f"Kostenparameter: {cost_params}")
-
     EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
     MAX_WORKERS = int(os.getenv("MAX_SYNC_WORKERS", "5"))
-    logger.info(f"Parallelisierung: {MAX_WORKERS} Worker.")
 
     async with aiohttp.ClientSession() as session:
         # Alle gelisteten Artikel laden
@@ -676,27 +660,21 @@ async def main():
             items = await conn.fetch(query)
 
         total = len(items)
-        logger.info(f"📦 {total} gelistete Artikel gefunden.")
-
         if total == 0:
-            logger.info("Keine Artikel zu prüfen. Beende.")
-            await pool.close()
-            return
+            return {"total": 0, "stats": {}}
 
         # Statistiken
         stats = {
             "unchanged": 0, "price_updated": 0, "sold": 0, "unprofitable": 0,
             "skipped": 0, "network_error": 0, "calc_error": 0, "ebay_error": 0,
-            "vacation_paused": 0, "db_initialized": 0,
+            "vacation_paused": 0, "db_initialized": 0, "fallback_rotated": 0, "no_backup_ended": 0
         }
-        processed_count = [0] # Liste als Mutable Container für Worker
+        processed_count = [0] 
 
-        # Queue befüllen
         queue = asyncio.Queue()
         for record in items:
             await queue.put(record)
 
-        # Worker starten
         tasks = []
         for i in range(MAX_WORKERS):
             worker_id = f"[W-{i+1}]"
@@ -705,32 +683,32 @@ async def main():
             )
             tasks.append(task)
 
-        # Warten bis Queue leer ist
         await queue.join()
-
-        # Worker stoppen
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    await pool.close()
+    return {"total": total, "stats": stats}
 
-    # Zusammenfassung
-    logger.info("=" * 60)
-    logger.info("📊 ZUSAMMENFASSUNG")
-    logger.info(f"  Geprüft:           {total}")
-    logger.info(f"  Unverändert:       {stats['unchanged']}")
-    logger.info(f"  Preis aktualisiert:{stats['price_updated']}")
-    logger.info(f"  Verkauft (BL):     {stats['sold']}")
-    logger.info(f"  Rotations-Fallback:{stats.get('fallback_rotated', 0)}")
-    logger.info(f"  Backup-Fehlt-Ende: {stats.get('no_backup_ended', 0)}")
-    logger.info(f"  Urlaub (Pausiert): {stats['vacation_paused']}")
-    logger.info(f"  Unrentabel:        {stats['unprofitable']}")
-    logger.info(f"  eBay-Fehler (404): {stats.get('ebay_error', 0)}")
-    logger.info(f"  Übersprungen:      {stats['skipped']}")
-    logger.info(f"  Netzwerkfehler:    {stats['network_error']}")
-    logger.info("=" * 60)
-
+async def main():
+    """Einmal-Durchlauf für CLI-Start."""
+    db_url = os.environ.get("DATABASE_URL")
+    if not db_url:
+        logger.error("DATABASE_URL fehlt!")
+        return
+    pool = await DatabaseManager.create_pool(db_url)
+    try:
+        results = await run_sync(pool)
+        stats = results["stats"]
+        logger.info("=" * 60)
+        logger.info(f"📊 ZUSAMMENFASSUNG: {results['total']} geprüft")
+        logger.info(f"  Unverändert:       {stats.get('unchanged',0)}")
+        logger.info(f"  Preis-Updates:     {stats.get('price_updated',0)}")
+        logger.info(f"  Verkauft (BL):     {stats.get('sold',0)}")
+        logger.info(f"  Urlaub (Pausiert): {stats.get('vacation_paused',0)}")
+        logger.info("=" * 60)
+    finally:
+        await pool.close()
 
 if __name__ == "__main__":
     asyncio.run(main())

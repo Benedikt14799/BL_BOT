@@ -96,6 +96,12 @@ class EbayTokenManager:
             f"Gültig für {data.get('expires_in', 7200)} Sekunden."
         )
         return self.access_token
+        
+    def force_refresh(self) -> str:
+        """Erzwingt einen Token-Refresh, unabhängig vom Ablaufdatum."""
+        self.access_token = None
+        self.token_expiry = 0
+        return self.get_access_token()
 
 
 # ---------------------------------------------------------------------------
@@ -119,6 +125,15 @@ def get_token() -> str:
     if _instance is None:
         _instance = EbayTokenManager()
     return _instance.get_access_token()
+
+def force_refresh_token() -> str:
+    """
+    Erzwingt einen Refresh des Tokens und gibt den neuen zurück.
+    """
+    global _instance
+    if _instance is None:
+        _instance = EbayTokenManager()
+    return _instance.force_refresh()
 
 
 def reset():

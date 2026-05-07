@@ -102,7 +102,8 @@ async def run_inventory_sync(db_pool):
         query = """
             SELECT id, sku, title, linktobl, ebay_listing_id
             FROM library
-            WHERE ebay_listed = TRUE
+            WHERE ebay_listed = TRUE 
+              AND status_id = 4
         """
         db_items = await conn.fetch(query)
     
