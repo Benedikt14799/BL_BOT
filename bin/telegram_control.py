@@ -2,7 +2,7 @@ import os
 import time
 import asyncio
 import logging
-import requests
+import aiohttp
 from dotenv import load_dotenv
 import asyncpg
 
