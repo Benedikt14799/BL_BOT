@@ -10,7 +10,8 @@ import asyncpg
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 
-from sync.booklooker import reactivate_vacation, ebay as sync_ebay
+from sync.booklooker.reactivate_vacation import reactivate_vacation
+from sync.booklooker import ebay as sync_ebay
 from sync import ebay_inventory_check
 from database import DatabaseManager
 
