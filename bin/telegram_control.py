@@ -30,58 +30,80 @@ if not TOKEN or not CHAT_ID:
 
 async def send_message_async(text):
     url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    # Fallback to HTML if Markdown fails due to underscores
     payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
     try:
         async with aiohttp.ClientSession() as session:
-            await session.post(url, json=payload, timeout=10)
+            async with session.post(url, json=payload, timeout=10) as resp:
+                result = await resp.text()
+                if resp.status != 200:
+                    logger.error(f"Telegram API Error (Markdown failed): {resp.status} - {result}")
+                    # Retry without Markdown
+                    payload["parse_mode"] = ""
+                    await session.post(url, json=payload, timeout=10)
     except Exception as e:
         logger.error(f"Fehler beim Senden der Nachricht: {e}")
 
 async def run_urlaub():
+    logger.info("Starte /urlaub...")
     await send_message_async("🏖️ *Urlaubs-Reaktivierung gestartet...*")
-    pool = await DatabaseManager.create_pool(DB_URL)
-    if not pool:
-        await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
-        return
     try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        if not pool:
+            await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
+            return
+        
+        logger.info("Datenbankpool für Urlaub erstellt. Rufe reactivate_vacation auf.")
         res = await reactivate_vacation(pool)
+        logger.info(f"Ergebnis reactivate_vacation: {res}")
+        
         msg = f"✅ *Urlaubs-Reaktivierung abgeschlossen!*\n\n• Geprüft: {res['found']}\n• Reaktiviert: *{res['reactivated']}* 📖"
         await send_message_async(msg)
     except Exception as e:
-        await send_message_async(f"❌ *Fehler bei Urlaubs-Reaktivierung:* {str(e)}")
+        logger.error(f"Kritischer Fehler in run_urlaub: {e}", exc_info=True)
+        await send_message_async(f"❌ Fehler bei Urlaubs-Reaktivierung: {str(e)}")
     finally:
-        await pool.close()
+        if 'pool' in locals() and pool:
+            await pool.close()
 
 async def run_ebaysync():
+    logger.info("Starte /ebaysync...")
     await send_message_async("📦 *eBay Bestandsabgleich gestartet...*")
-    pool = await DatabaseManager.create_pool(DB_URL)
-    if not pool:
-        await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
-        return
     try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        if not pool:
+            await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
+            return
+            
         res = await ebay_inventory_check.run_inventory_sync(pool)
         msg = f"✅ *eBay Bestandsabgleich fertig!*\n\n• DB-Artikel geprüft: {res['total_checked']}\n• Von eBay gelöscht: *{res['removed']}* 🗑️\n• eBay Orphans (nicht in DB): {res['orphans']}"
         await send_message_async(msg)
     except Exception as e:
-        await send_message_async(f"❌ *Fehler bei eBay Bestandsabgleich:* {str(e)}")
+        logger.error(f"Kritischer Fehler in run_ebaysync: {e}", exc_info=True)
+        await send_message_async(f"❌ Fehler bei eBay Bestandsabgleich: {str(e)}")
     finally:
-        await pool.close()
+        if 'pool' in locals() and pool:
+            await pool.close()
 
 async def run_blsync():
+    logger.info("Starte /blsync...")
     await send_message_async("🔄 *Bestands- & Preis-Sync gestartet...*")
-    pool = await DatabaseManager.create_pool(DB_URL)
-    if not pool:
-        await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
-        return
     try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        if not pool:
+            await send_message_async("❌ *Fehler:* Konnte keine Datenbankverbindung aufbauen.")
+            return
+            
         res = await sync_ebay.run_sync(pool)
         s = res["stats"]
         msg = f"✅ *Bestands- & Preis-Sync fertig!*\n\n• Artikel geprüft: {res['total']}\n• Preise aktualisiert: *{s.get('price_updated', 0)}* 💸\n• Verkauft (BL): *{s.get('sold', 0)}* 🛒\n• Urlaub (Pausiert): {s.get('vacation_paused', 0)} 🏖️\n• Unrentabel: {s.get('unprofitable', 0)} ✂️"
         await send_message_async(msg)
     except Exception as e:
-        await send_message_async(f"❌ *Fehler bei Bestands- & Preis-Sync:* {str(e)}")
+        logger.error(f"Kritischer Fehler in run_blsync: {e}", exc_info=True)
+        await send_message_async(f"❌ Fehler bei Bestands- & Preis-Sync: {str(e)}")
     finally:
-        await pool.close()
+        if 'pool' in locals() and pool:
+            await pool.close()
 
 async def handle_update(update):
     if "message" not in update:
