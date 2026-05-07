@@ -38,7 +38,7 @@ def send_message(text):
 
 async def run_urlaub():
     send_message("🏖️ *Urlaubs-Reaktivierung gestartet...*")
-    pool = await asyncpg.create_pool(dsn=DB_URL, ssl="require")
+    pool = await asyncpg.create_pool(dsn=DB_URL, ssl=True)
     try:
         res = await reactivate_vacation(pool)
         msg = f"✅ *Urlaubs-Reaktivierung abgeschlossen!*\n\n• Geprüft: {res['found']}\n• Reaktiviert: *{res['reactivated']}* 📖"
@@ -50,7 +50,7 @@ async def run_urlaub():
 
 async def run_ebaysync():
     send_message("📦 *eBay Bestandsabgleich gestartet...*")
-    pool = await asyncpg.create_pool(dsn=DB_URL, ssl="require")
+    pool = await asyncpg.create_pool(dsn=DB_URL, ssl=True)
     try:
         res = await ebay_inventory_check.run_inventory_sync(pool)
         msg = f"✅ *eBay Bestandsabgleich fertig!*\n\n• DB-Artikel geprüft: {res['total_checked']}\n• Von eBay gelöscht: *{res['removed']}* 🗑️\n• eBay Orphans (nicht in DB): {res['orphans']}"
