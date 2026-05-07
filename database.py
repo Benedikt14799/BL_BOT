@@ -236,8 +236,8 @@ class DatabaseManager:
             # Status-Labels korrigieren (ID 2: missing_isbn -> gefiltert)
             await conn.execute("UPDATE library_statuses SET label = 'gefiltert' WHERE id = 2 AND label = 'missing_isbn';")
             
-            # Weitere fehlende Spalten
             await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS ebay_listed BOOLEAN DEFAULT FALSE;")
+            await conn.execute("ALTER TABLE library ADD COLUMN IF NOT EXISTS vacation_until DATE;")
             
             # Numerische Präzision erzwingen (Rundung in DB)
             numeric_cols = [
