@@ -33,10 +33,12 @@ async def main():
 
         logger.info("Versuche Verbindung zu Supabase über den Session Pooler (IPv4) herzustellen...")
 
-        db_pool = await asyncpg.create_pool(
-            dsn=db_url,
-            ssl="require"
-        )
+        db_pool = await DatabaseManager.create_pool(db_url)
+        
+        if not db_pool:
+            logger.error("Fehler beim Erstellen des Datenbank-Pools.")
+            errors = 1
+            return
 
         await DatabaseManager.create_table(db_pool)
 

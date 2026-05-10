@@ -652,6 +652,7 @@ async def process_library_links_async(db_pool):
         total_ok = 0
         total_filtered = 0
         total_errors = 0
+        processed = 0
         
         async with aiohttp.ClientSession() as session:
             from ebay_analytics import has_sufficient_quota
