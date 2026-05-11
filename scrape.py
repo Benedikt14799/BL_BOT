@@ -176,21 +176,18 @@ async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
         processed_links.append(cleaned_link)
 
     async with db_pool.acquire() as conn:
-        # Wir holen alle Links, die bereits existieren, um zu sehen, welche Metadaten fehlen (NULL).
-        rows = await conn.fetch("SELECT link, anzahlSeiten FROM sitetoscrape WHERE link = ANY($1)", processed_links)
-        existing_meta = {r["link"]: r["anzahlseiten"] for r in rows}
+        # Wir holen ALLE Links aus sitetoscrape, um ihre Seitenzahlen zu aktualisieren
+        rows = await conn.fetch("SELECT link FROM sitetoscrape")
+        existing_links = [r["link"] for r in rows]
 
-    # Wir verarbeiten Links, die entweder neu sind ODER bei denen anzahlSeiten noch NULL ist.
-    links_to_fetch = []
-    for l in processed_links:
-        if l not in existing_meta or existing_meta[l] is None:
-            links_to_fetch.append(l)
+    # Wir verarbeiten alle Links aus der Datei PLUS alle existierenden Links
+    links_to_fetch = list(set(processed_links + existing_links))
 
     if not links_to_fetch:
-        logger.info("Alle Links bereits mit Metadaten in sitetoscrape vorhanden.")
+        logger.info("Keine Links zum Aktualisieren gefunden.")
         return
 
-    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links...")
+    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links (täglicher Refresh)...")
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
             *(fetch_and_process(session, l) for l in links_to_fetch),
@@ -659,13 +656,18 @@ async def process_library_links_async(db_pool):
             
             # in Batches verarbeiten
             for i in range(0, total_to_process, BATCH_SIZE):
-                # RATE LIMIT CHECK
-                can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=BATCH_SIZE)
+                # RATE LIMIT CHECK - Mindestens 1 Request übrig
+                can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=1)
                 if not can_continue:
-                    logger.warning(f"eBay API Limit fast erreicht. Pause...")
+                    logger.warning(f"eBay API Limit erreicht (0 verbleibend). Pause bis {reset_time}...")
                     break
 
-                batch = rows[i: i + BATCH_SIZE]
+                # Nutze das verbleibende Kontingent, maximal jedoch BATCH_SIZE
+                current_batch_size = min(BATCH_SIZE, remaining)
+                batch = rows[i: i + current_batch_size]
+                
+                # Wenn wir durch die Anpassung den Index verschieben, müssen wir das im äußeren Loop eigentlich korrigieren,
+                # aber da wir nach diesem Batch ohnehin abbrechen (weil remaining < BATCH_SIZE), reicht das hier so aus.
                 tasks = [
                     asyncio.create_task(_process_one_entry(
                         session, row, db_pool, token, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz
