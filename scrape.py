@@ -464,7 +464,40 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     # bereits in missing_listings verschoben und gelöscht
                     return "filtered"
 
-                # Preis berechnen und speichern
+                # Eigenschaften vorab auswerten, um Zustand, Titel und Verkäuferbewertung zu prüfen
+                props_raw = bl_processing.PropertyExtractor.extract_property_items(soup)
+                
+                # Check Verkäuferbewertung
+                val_bewertung = props_raw.get("verkaeufer_bewertung:")
+                if val_bewertung:
+                    import re
+                    m = re.search(r"(\d+[.,]\d+)", val_bewertung)
+                    if m:
+                        pct = float(m.group(1).replace(",", "."))
+                        if pct < 98.0:
+                            logger.warning(f"Artikel {num} hat eine Verkäuferbewertung unter 98% ({pct}%) – verschiebe.")
+                            await DatabaseManager.record_missing_listing(db_pool, num, link, "schlechte_bewertung")
+                            return "deleted_schlechte_bewertung"
+                    else:
+                        m = re.search(r"(\d+)", val_bewertung)
+                        if m:
+                            pct = float(m.group(1))
+                            if pct < 98.0:
+                                logger.warning(f"Artikel {num} hat eine Verkäuferbewertung unter 98% ({pct}%) – verschiebe.")
+                                await DatabaseManager.record_missing_listing(db_pool, num, link, "schlechte_bewertung")
+                                return "deleted_schlechte_bewertung"
+
+                # Bilder extrahieren und speichern VOR der eBay-Preiskalkulation!
+                # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
+                pics = await picture_processing.PictureProcessing.get_pictures_with_dnb(
+                    session, soup, num, db_pool, isbn or ""
+                )
+
+                if not pics:
+                    logger.warning(f"[{num}] Abbruch der Detailverarbeitung: Keine Bilder vorhanden.")
+                    return "deleted_missing_photo"
+
+                # Preis berechnen und speichern (inkl. eBay API Hybrid-Check)
                 prof = await price_processing.PriceProcessing.get_price(
                     session=session,
                     soup=soup,
@@ -485,9 +518,6 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     logger.warning(f"[{num}] Konnte Preis nicht verarbeiten. Verschiebe.")
                     await DatabaseManager.record_missing_listing(db_pool, num, link, "price_extraction_error")
                     return "error"
-
-                # Eigenschaften vorab auswerten, um Zustand und Titel zu prüfen
-                props_raw = bl_processing.PropertyExtractor.extract_property_items(soup)
 
                 # --- 💸 ARBITRAGE CHECK ---
                 # Dies passiert für ALLE Angebote mit ISBN (auch für "unrentable" eBay-Angebote oder private Anbieter ohne Backup)
@@ -518,16 +548,6 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                             prof.get('marge')
                         )
                         return "deleted_unprofitable"
-
-                # Bilder extrahieren und speichern
-                # Bei fehlender ISBN würde hier isbn="" durchgereicht; die Funktion verschiebt ohne Bilder in missing_listings
-                pics = await picture_processing.PictureProcessing.get_pictures_with_dnb(
-                    session, soup, num, db_pool, isbn or ""
-                )
-
-                if not pics:
-                    logger.warning(f"[{num}] Abbruch der Detailverarbeitung: Keine Bilder vorhanden.")
-                    return "deleted_missing_photo"
 
                 if is_private_seller:
                     cond_norm = bl_processing.PropertyToDatabase._map_condition(props_raw.get("zustand:", ""))

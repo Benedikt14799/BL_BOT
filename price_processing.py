@@ -116,20 +116,25 @@ class PriceProcessing:
             # 2. Konkurrenz-Check (falls Token vorhanden)
             comp_data = {}
             recommended_p = None
+            ek_total = ek + bl_shipping
+            
             if token and base_url:
-                if isbn:
-                    comp_data = await PriceProcessing.get_competitor_prices(session, isbn, token, base_url, condition=bl_cond)
+                if ek_total <= Decimal('8.00'):
+                    logger.info(f"[{num}] Hybrid-Modus: EK+Versand ({ek_total}€) <= 8€. Überspringe eBay Konkurrenz-Check.")
                 else:
-                    # Keyword-Suche via Titel + Autor
-                    title = PriceProcessing._safe_extract_title(soup)
-                    author = PriceProcessing._safe_extract_author(soup)
-                    if title:
-                        query = f"{title} {author}".strip()
-                        logger.info(f"[{num}] Suche ohne ISBN nach: {query}")
-                        comp_data = await PriceProcessing.get_competitor_prices(session, query, token, base_url, condition=bl_cond)
-                
-                if comp_data.get("gefunden"):
-                    recommended_p = Decimal(str(comp_data.get("empfohlener_preis", "0")))
+                    if isbn:
+                        comp_data = await PriceProcessing.get_competitor_prices(session, isbn, token, base_url, condition=bl_cond)
+                    else:
+                        # Keyword-Suche via Titel + Autor
+                        title = PriceProcessing._safe_extract_title(soup)
+                        author = PriceProcessing._safe_extract_author(soup)
+                        if title:
+                            query = f"{title} {author}".strip()
+                            logger.info(f"[{num}] Suche ohne ISBN nach: {query}")
+                            comp_data = await PriceProcessing.get_competitor_prices(session, query, token, base_url, condition=bl_cond)
+                    
+                    if comp_data.get("gefunden"):
+                        recommended_p = Decimal(str(comp_data.get("empfohlener_preis", "0")))
 
             # 3. Finalen eBay-Preis p bestimmen
             # Falls Empfehlung vorhanden, nehmen wir diese, sonst Standard-Kalkulation
@@ -137,7 +142,6 @@ class PriceProcessing:
                 final_price = PriceProcessing._round_x99_up(recommended_p)
             else:
                 # Dynamischer Faktor für Seltenheit/Monopol
-                ek_total = ek + bl_shipping
                 strategy = comp_data.get("strategie")
                 
                 if strategy in ("Seltenheits-Bonus", "Monopol-Stellung"):
