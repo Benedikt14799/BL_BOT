@@ -508,3 +508,33 @@ class DatabaseManager:
             status = await conn.execute("UPDATE library SET status_id = 7 WHERE status_id = 2")
             logger.info(f"Datenbank: Gefilterte Links wurden reaktiviert ({status}).")
             return status
+
+    @staticmethod
+    async def get_library_stats(db_pool):
+        """Holt die wichtigsten Statistiken aus der Library Tabelle."""
+        async with db_pool.acquire() as conn:
+            # 1. Ready for Upload (status_id = 1, not yet listed, has price and photo)
+            ready = await conn.fetchval("""
+                SELECT COUNT(*) FROM library 
+                WHERE status_id = 1 
+                  AND (ebay_listed IS FALSE OR ebay_listed IS NULL)
+                  AND (ebay_status IS NULL OR ebay_status != 'listed')
+                  AND start_price > 0 
+                  AND photo IS NOT NULL AND photo != '';
+            """)
+            
+            # 2. Filtered/Aussortiert (status_id = 2)
+            filtered = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 2;")
+            
+            # 3. Listed on eBay (status_id = 4 AND ebay_listed = TRUE)
+            listed = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 4 AND ebay_listed = TRUE;")
+            
+            # 4. Pipeline/Pending (status_id = 7)
+            pipeline = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 7;")
+            
+            return {
+                "ready": ready or 0,
+                "filtered": filtered or 0,
+                "listed": listed or 0,
+                "pipeline": pipeline or 0
+            }

@@ -524,6 +524,10 @@ async def ensure_volume_pricing_promotion(session: aiohttp.ClientSession, token:
 
 
 async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
+    if os.environ.get("DISABLE_EBAY_UPLOAD", "").lower() == "true":
+        logger.warning("SICHERHEITS-SPERRE: eBay Upload ist global deaktiviert (DISABLE_EBAY_UPLOAD=true). Abbruch zum Schutz der Limits.")
+        return {"success": 0, "failed": 0, "skipped": limit, "top_error": "Upload Globally Disabled"}
+
     from ebay_token_manager import get_token, force_refresh_token
     EBAY_USER_TOKEN = get_token()
     EBAY_FULFILLMENT_POLICY_ID = os.environ.get("EBAY_FULFILLMENT_POLICY_ID")

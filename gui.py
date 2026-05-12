@@ -138,6 +138,32 @@ class BLBotApp(tb.Window):
         # Handle clean exit
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        # Dashboard initial laden
+        self.after(500, self._refresh_dashboard)
+
+    def _refresh_dashboard(self):
+        """Aktualisiert alle Dashboard-Daten (Stats & Rate Limits)."""
+        asyncio.run_coroutine_threadsafe(self._update_dashboard_stats(), self.loop)
+        self.refresh_rate_limit()
+
+    async def _update_dashboard_stats(self):
+        """Halt die Library-Statistiken aus der DB und aktualisiert die UI."""
+        pool = await self._get_db_pool()
+        if not pool: return
+        
+        try:
+            stats = await DatabaseManager.get_library_stats(pool)
+            
+            def update_ui():
+                self.lbl_stat_pipeline.configure(text=f"{stats['pipeline']:,}".replace(",", "."))
+                self.lbl_stat_ready.configure(text=f"{stats['ready']:,}".replace(",", "."))
+                self.lbl_stat_listed.configure(text=f"{stats['listed']:,}".replace(",", "."))
+                self.lbl_stat_filtered.configure(text=f"{stats['filtered']:,}".replace(",", "."))
+            
+            self.after(0, update_ui)
+        except Exception as e:
+            logging.error(f"Fehler beim Dashboard-Update: {e}")
+
     def _switch_tab(self, index):
         """Switches the visible tab content frame."""
         for i, frame in enumerate(self.tabs):
@@ -218,6 +244,33 @@ class BLBotApp(tb.Window):
         ToolTip(self.btn_inventory_sync, text="Gleicht den eBay-Bestand mit der DB ab. Löscht Einträge in DB, die auf eBay nicht mehr existieren.", bootstyle=INFO, delay=100)
 
 
+
+        # System Statistics Section
+        stats_frame = tb.Labelframe(self.tab_dashboard, text="System-Statistik", padding=15)
+        stats_frame.pack(fill=X, padx=20, pady=(0, 10))
+
+        stats_data = tb.Frame(stats_frame)
+        stats_data.pack(fill=X)
+
+        # Pipeline (Pending)
+        tb.Label(stats_data, text="Pipeline (Wartend):", font=("Helvetica", 10)).grid(row=0, column=0, sticky=W, padx=5)
+        self.lbl_stat_pipeline = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=SECONDARY)
+        self.lbl_stat_pipeline.grid(row=0, column=1, sticky=W, padx=10)
+
+        # Ready for eBay
+        tb.Label(stats_data, text="Bereit für eBay:", font=("Helvetica", 10)).grid(row=0, column=2, sticky=W, padx=20)
+        self.lbl_stat_ready = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=SUCCESS)
+        self.lbl_stat_ready.grid(row=0, column=3, sticky=W, padx=10)
+
+        # Listed
+        tb.Label(stats_data, text="Auf eBay gelistet:", font=("Helvetica", 10)).grid(row=1, column=0, sticky=W, padx=5, pady=(5,0))
+        self.lbl_stat_listed = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=INFO)
+        self.lbl_stat_listed.grid(row=1, column=1, sticky=W, padx=10, pady=(5,0))
+
+        # Filtered
+        tb.Label(stats_data, text="Aussortiert/Gefiltert:", font=("Helvetica", 10)).grid(row=1, column=2, sticky=W, padx=20, pady=(5,0))
+        self.lbl_stat_filtered = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=DANGER)
+        self.lbl_stat_filtered.grid(row=1, column=3, sticky=W, padx=10, pady=(5,0))
 
         # Rate Limit Section
         rl_frame = tb.Labelframe(self.tab_dashboard, text="eBay API Rate Limit", padding=15)
@@ -838,10 +891,15 @@ class BLBotApp(tb.Window):
                 logging.info("Stopp-Signal gesendet...")
             return
 
-        self.btn_start.configure(bootstyle=DANGER, text="Scraping Stoppen")
-        self.scrape_task = asyncio.run_coroutine_threadsafe(self._scrape_task(), self.loop)
+        do_category = messagebox.askyesno(
+            "Kategorien durchsuchen?", 
+            "Sollen auch die Kategorie-Seiten nach neuen Büchern durchsucht werden?\n\n(Klicke 'Nein', um die Suche zu überspringen und direkt deine Pipeline an wartenden Büchern abzuarbeiten!)"
+        )
 
-    async def _scrape_task(self):
+        self.btn_start.configure(bootstyle=DANGER, text="Scraping Stoppen")
+        self.scrape_task = asyncio.run_coroutine_threadsafe(self._scrape_task(do_category), self.loop)
+
+    async def _scrape_task(self, do_category):
         pool = await self._get_db_pool()
         if not pool:
             self.after(0, lambda: self.btn_start.configure(bootstyle=SUCCESS, text="Scraping Starten"))
@@ -858,9 +916,11 @@ class BLBotApp(tb.Window):
             if links:
                 await scrape.insert_links_into_sitetoscrape(links, pool)
             
-            # Immer prüfen, ob es noch un-gescrapte Seiten in sitetoscrape gibt 
-            # (auch die von vorherigen Sessions)
-            await scrape.scrape_and_save_pages(pool)
+            if do_category:
+                logging.info("Kategorien werden auf neue Bücher durchsucht...")
+                await scrape.scrape_and_save_pages(pool)
+            else:
+                logging.info("Kategorie-Suche übersprungen. Gehe direkt zur Pipeline (Detailverarbeitung).")
             
             # Detailverarbeitung starten (mit Quoten-Überwachung)
             await scrape.perform_webscrape_async(pool)

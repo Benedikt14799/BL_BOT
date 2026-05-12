@@ -33,9 +33,24 @@ logger = logging.getLogger("SyncService")
 # ==========================================
 if HAS_TELEGRAM:
     async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("📊 *Sync-Dienst läuft im Hintergrund.*\n"
-                                       "Der nächste automatische Abgleich startet gem. Zeitplan.", 
-                                       parse_mode='Markdown')
+        from database import DatabaseManager
+        db_url = os.getenv("DATABASE_URL")
+        pool = await DatabaseManager.create_pool(db_url)
+        try:
+            stats = await DatabaseManager.get_library_stats(pool)
+            msg = (
+                "📊 *Aktueller System-Status*\n\n"
+                f"📥 *Pipeline (Wartend):* {stats['pipeline']:,}\n"
+                f"✅ *Bereit für eBay:* {stats['ready']:,}\n"
+                f"📦 *Auf eBay gelistet:* {stats['listed']:,}\n"
+                f"🗑️ *Aussortiert/Gefiltert:* {stats['filtered']:,}\n\n"
+                "_Der Sync-Dienst läuft stabil im Hintergrund._"
+            ).replace(",", ".")
+            await update.message.reply_text(msg, parse_mode='Markdown')
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler beim Abrufen der Stats: {e}")
+        finally:
+            await pool.close()
 
     async def cmd_sync_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚀 Manueller Sync via Telegram gestartet...")
