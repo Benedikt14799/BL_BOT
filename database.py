@@ -114,7 +114,8 @@ class DatabaseManager:
             (4, 'listed'),       -- Aktiv auf eBay
             (5, 'sold_on_bl'),   -- Auf Booklooker verkauft
             (6, 'delisted'),     -- Manuell oder durch Fehler entfernt
-            (7, 'pending')       -- Neu gescrapt, noch nicht geprüft
+            (7, 'pending'),      -- Neu gescrapt, noch nicht geprüft
+            (8, 'sold_on_ebay')  -- Erfolgreich auf eBay verkauft
             ON CONFLICT (id) DO NOTHING;
         """)
         if not exists_status:
@@ -279,6 +280,31 @@ class DatabaseManager:
         """)
         if not exists_arbitrage:
             logger.info("Tabelle 'arbitrage_deals' wurde neu angelegt.")
+
+        # Tabelle für eBay Bestellungen (Sales / Orders)
+        exists_orders = await DatabaseManager.table_exists(conn, 'ebay_orders')
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ebay_orders (
+                order_id VARCHAR(100) PRIMARY KEY,
+                creation_date TIMESTAMP,
+                sku VARCHAR(50),
+                title TEXT,
+                buyer_name VARCHAR(255),
+                buyer_address TEXT,
+                gross_revenue NUMERIC(10,2),
+                ebay_fee NUMERIC(10,2),
+                purchase_price NUMERIC(10,2),
+                purchase_shipping NUMERIC(10,2),
+                net_profit NUMERIC(10,2),
+                margin NUMERIC(10,2),
+                status VARCHAR(50),
+                reported BOOLEAN DEFAULT FALSE,
+                sheet_exported BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT NOW()
+            );
+        """)
+        if not exists_orders:
+            logger.info("Tabelle 'ebay_orders' wurde neu angelegt.")
 
         # Trigger um ebay_status (String) synchron zu status_id (FK) zu halten (für Abwärtskompatibilität)
         try:

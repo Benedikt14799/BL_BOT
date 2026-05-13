@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from sync.booklooker.ebay import main as sync_ebay_main
 from sync.booklooker.reactivate_vacation import main as reactivate_vacation_main
 from sync import ebay_inventory_check
+from sync.ebay_orders import process_orders, generate_daily_report
 from database import DatabaseManager
 import scrape
 
@@ -21,14 +22,14 @@ CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 def load_bot_config():
     if not os.path.exists(CONFIG_FILE):
-        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "18:00"]}
+        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "12:00", "18:00", "19:00"]}
     try:
         with open(CONFIG_FILE, "r") as f:
             cfg = json.load(f)
-            if "report_times" not in cfg: cfg["report_times"] = ["09:00", "18:00"]
+            if "report_times" not in cfg: cfg["report_times"] = ["09:00", "12:00", "18:00", "19:00"]
             return cfg
     except:
-        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "18:00"]}
+        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "12:00", "18:00", "19:00"]}
 
 # Logging-Konfiguration
 logging.basicConfig(
@@ -164,11 +165,33 @@ async def service_loop():
                     await run_scraping()
                     last_scrape_day = today
 
-            # 3. Check Reports (09:00 & 18:00)
-            report_times = config.get("report_times", ["09:00", "18:00"])
+            # 3. Check Reports (09:00, 12:00, 18:00, 19:00)
+            report_times = config.get("report_times", ["09:00", "12:00", "18:00", "19:00"])
             if now_str in report_times and last_report_time != day_hour_str:
+                # Normaler Status-Report
                 await run_status_report()
+                
+                # Wenn 12:00 oder 19:00, zusätzlich Sales Report senden
+                if now_str in ["12:00", "19:00"]:
+                    db_url = os.getenv("DATABASE_URL")
+                    pool = await DatabaseManager.create_pool(db_url)
+                    try:
+                        # Mittags: Letzte 12h, Abends: Letzte 24h
+                        h = 12 if now_str == "12:00" else 24
+                        sales_report = await generate_daily_report(pool, h)
+                        await send_telegram_report(sales_report)
+                    finally:
+                        await pool.close()
+                
                 last_report_time = day_hour_str
+
+            # 4. Periodischer eBay Order Check (alle 30 Minuten)
+            if (now.minute % 30 == 0) and last_order_sync_time != day_hour_str:
+                logger.info("Starte periodischen eBay Order-Check...")
+                notifications = await process_orders()
+                for note in notifications:
+                    await send_telegram_report(note)
+                last_order_sync_time = day_hour_str
 
             await asyncio.sleep(30) # Alle 30 Sek prüfen für präzise Reports
             
@@ -185,4 +208,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Service durch Benutzer beendet.")
-

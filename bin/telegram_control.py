@@ -15,6 +15,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from sync.booklooker.reactivate_vacation import reactivate_vacation
 from sync.booklooker import ebay as sync_ebay
 from sync import ebay_inventory_check
+from sync.ebay_orders import process_orders, generate_daily_report
 from database import DatabaseManager
 import ebay_upload
 
@@ -171,6 +172,27 @@ async def run_blsync():
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
+async def run_sales():
+    await send_message_async("💰 *Suche nach neuen eBay Verkäufen...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        # 1. Neue Verkäufe abrufen & verarbeiten
+        notifications = await process_orders()
+        if not notifications:
+            await send_message_async("ℹ️ Keine neuen Verkäufe gefunden.")
+        else:
+            for note in notifications:
+                await send_message_async(note)
+        
+        # 2. Tagesbericht senden (letzte 24h)
+        report = await generate_daily_report(pool, 24)
+        await send_message_async(report)
+        
+    except Exception as e:
+        await send_message_async(f"❌ Fehler: {e}")
+    finally:
+        if 'pool' in locals() and pool: await pool.close()
+
 async def handle_update(update):
     if "message" not in update: return
     msg = update["message"]
@@ -221,6 +243,8 @@ async def handle_update(update):
         asyncio.create_task(run_ebaysync())
     elif text == "/blsync":
         asyncio.create_task(run_blsync())
+    elif text == "/sales":
+        asyncio.create_task(run_sales())
 
 async def main():
     logger.info("Telegram Control Bot gestartet...")
