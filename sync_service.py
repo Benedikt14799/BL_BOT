@@ -79,15 +79,10 @@ async def run_status_report():
         await pool.close()
 
 async def run_full_sync():
-# ... (Rest der bestehenden Funktionen bleibt gleich)
-    """Führt Urlaub, Bestandsabgleich und Preis-Sync aus."""
-    logger.info("=== STARTE FULL SYNC (Urlaub, eBay, BL) ===")
+    """Führt Bestandsabgleich und Preis-Sync aus."""
+    logger.info("=== STARTE FULL SYNC (eBay, BL) ===")
     try:
-        # 1. Urlaub
-        logger.info("Prüfe Urlaubs-Rückkehrer...")
-        await reactivate_vacation_main()
-        
-        # 2. eBay Bestandsabgleich (Löscht Differenzen)
+        # 1. eBay Bestandsabgleich (Löscht Differenzen)
         logger.info("Starte eBay-Bestandsabgleich...")
         db_url = os.getenv("DATABASE_URL")
         pool = await DatabaseManager.create_pool(db_url)
@@ -96,7 +91,7 @@ async def run_full_sync():
         finally:
             await pool.close()
 
-        # 3. Preis- & Status-Sync (Booklooker)
+        # 2. Preis- & Status-Sync (Booklooker)
         logger.info("Starte Preis- & Bestands-Sync (BL)...")
         await sync_ebay_main()
         
