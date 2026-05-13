@@ -151,6 +151,17 @@ async def run_upload():
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
+async def run_blsync():
+    await send_message_async("🔄 *Bestands- & Preis-Sync gestartet...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        await sync_ebay.run_sync(pool)
+        await send_message_async("✅ *Bestands- & Preis-Sync fertig!*")
+    except Exception as e:
+        await send_message_async(f"❌ Fehler: {e}")
+    finally:
+        if 'pool' in locals() and pool: await pool.close()
+
 async def handle_update(update):
     if "message" not in update: return
     msg = update["message"]
@@ -200,14 +211,7 @@ async def handle_update(update):
     elif text == "/ebaysync":
         asyncio.create_task(run_ebaysync())
     elif text == "/blsync":
-        await send_message_async("🔄 Preis-Sync gestartet...")
-        # (Logik für blsync...)
-        try:
-            pool = await DatabaseManager.create_pool(DB_URL)
-            await sync_ebay.run_sync(pool)
-            await send_message_async("✅ Preis-Sync fertig.")
-        finally:
-            if 'pool' in locals() and pool: await pool.close()
+        asyncio.create_task(run_blsync())
 
 async def main():
     logger.info("Telegram Control Bot gestartet...")
