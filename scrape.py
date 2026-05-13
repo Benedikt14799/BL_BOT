@@ -441,7 +441,9 @@ MAX_RETRIES = 2
 BATCH_SIZE = 200  # für gather in Blöcken
 
 
-async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, token=None, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
+async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
+    from ebay_token_manager import get_token
+    token = get_token()
     """
     Verarbeitet EIN library-Datensatz robust:
     - ISBN prüfen (löscht bei missing)
@@ -616,7 +618,6 @@ async def process_library_links_async(db_pool):
     from decimal import Decimal
 
     from ebay_token_manager import get_token
-    token = get_token()
     env_str = os.getenv("EBAY_ENV", "PRODUCTION")
     base_url = "https://api.ebay.com" if env_str == "PRODUCTION" else "https://api.sandbox.ebay.com"
 
@@ -690,7 +691,7 @@ async def process_library_links_async(db_pool):
                 # aber da wir nach diesem Batch ohnehin abbrechen (weil remaining < BATCH_SIZE), reicht das hier so aus.
                 tasks = [
                     asyncio.create_task(_process_one_entry(
-                        session, row, db_pool, token, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz
+                        session, row, db_pool, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz
                     )) for row in batch
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)

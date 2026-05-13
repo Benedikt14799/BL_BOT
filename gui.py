@@ -46,18 +46,20 @@ class TextHandler(logging.Handler):
         msgs = '\n'.join(self.buffer) + '\n'
         self.buffer.clear()
         
-        self.text_widget.configure(state='normal')
-        self.text_widget.insert(tk.END, msgs)
-        
-        # Begrenze Zeilenanzahl auf ca. 5000, um Speicher zu schonen
         try:
-            if float(self.text_widget.index('end-1c')) > 5000:
-                self.text_widget.delete('1.0', 'end-5000l')
+            if self.text_widget.winfo_exists():
+                self.text_widget.configure(state='normal')
+                self.text_widget.insert(tk.END, msgs)
+                
+                # Begrenze Zeilenanzahl auf ca. 5000, um Speicher zu schonen
+                if float(self.text_widget.index('end-1c')) > 5000:
+                    self.text_widget.delete('1.0', 'end-5000l')
+                    
+                self.text_widget.configure(state='disabled')
+                self.text_widget.yview(tk.END)
         except Exception:
+            # Widget likely destroyed during shutdown
             pass
-            
-        self.text_widget.configure(state='disabled')
-        self.text_widget.yview(tk.END)
         self.update_pending = False
 
 class BLBotApp(tb.Window):
@@ -102,6 +104,15 @@ class BLBotApp(tb.Window):
             )
             btn.pack(side=LEFT, padx=8, pady=5)
             self.nav_btns.append(btn)
+
+        # Exit Button on the right
+        self.btn_exit = tb.Button(
+            self.nav_frame, 
+            text="❌ Beenden", 
+            bootstyle=(DANGER, OUTLINE), 
+            command=self.on_closing
+        )
+        self.btn_exit.pack(side=RIGHT, padx=10, pady=5)
         
         # Style tweak: Custom styles are no longer needed for Notebook
         
@@ -214,14 +225,26 @@ class BLBotApp(tb.Window):
 
     def on_closing(self):
         """Cleanup before closing the window."""
+        if not messagebox.askyesno("Beenden", "Möchtest du den BL_BOT wirklich beenden?"):
+            return
+
         logging.info("Closing application and cleaning up connections...")
-        if self.db_pool:
-            # Schedule pool closing in the loop
-            self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.db_pool.close()))
         
-        self.loop.call_soon_threadsafe(self.loop.stop)
-        self.destroy()
-        sys.exit(0)
+        # Stop background loop and tasks
+        if self.loop and self.loop.is_running():
+            # Cancel all running tasks in the loop
+            for task in asyncio.all_tasks(self.loop):
+                task.cancel()
+            
+            if self.db_pool:
+                self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.db_pool.close()))
+            
+            self.loop.call_soon_threadsafe(self.loop.stop)
+        
+        # Give some time for cleanup, then destroy
+        self.after(100, self.destroy)
+        # Note: sys.exit() will be called after mainloop ends or here if needed
+        # But destroying the window usually ends the mainloop.
 
     def _build_dashboard(self):
         # Controls
@@ -271,6 +294,11 @@ class BLBotApp(tb.Window):
         tb.Label(stats_data, text="Aussortiert/Gefiltert:", font=("Helvetica", 10)).grid(row=1, column=2, sticky=W, padx=20, pady=(5,0))
         self.lbl_stat_filtered = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=DANGER)
         self.lbl_stat_filtered.grid(row=1, column=3, sticky=W, padx=10, pady=(5,0))
+
+        # Manual Update Button
+        self.btn_refresh_stats = tb.Button(stats_frame, text="📊 Statistiken aktualisieren", bootstyle=(SECONDARY, OUTLINE), command=self._refresh_dashboard)
+        self.btn_refresh_stats.pack(side=BOTTOM, pady=(10, 0))
+        ToolTip(self.btn_refresh_stats, text="Aktualisiert die oben stehenden Zahlen manuell aus der Datenbank.", bootstyle=INFO, delay=100)
 
         # Rate Limit Section
         rl_frame = tb.Labelframe(self.tab_dashboard, text="eBay API Rate Limit", padding=15)

@@ -1,23 +1,36 @@
 import asyncio
 import os
 import logging
+import json
+import aiohttp
+from datetime import datetime, time as dt_time
 from dotenv import load_dotenv
 
 # Importiere die heute optimierten Kern-Module
 from sync.booklooker.ebay import main as sync_ebay_main
 from sync.booklooker.reactivate_vacation import main as reactivate_vacation_main
-
-# Telegram Bot Integration
-try:
-    from telegram import Update
-    from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-    HAS_TELEGRAM = True
-except ImportError:
-    HAS_TELEGRAM = False
+from sync import ebay_inventory_check
+from database import DatabaseManager
+import scrape
 
 load_dotenv()
 
-# Logging-Konfiguration für den Hintergrund-Dienst
+CONFIG_FILE = "bot_config.json"
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def load_bot_config():
+    if not os.path.exists(CONFIG_FILE):
+        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "18:00"]}
+    try:
+        with open(CONFIG_FILE, "r") as f:
+            cfg = json.load(f)
+            if "report_times" not in cfg: cfg["report_times"] = ["09:00", "18:00"]
+            return cfg
+    except:
+        return {"auto_scrape": True, "auto_sync": True, "scrape_time": "10:00", "sync_time": "03:00", "report_times": ["09:00", "18:00"]}
+
+# Logging-Konfiguration
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -29,93 +42,152 @@ logging.basicConfig(
 logger = logging.getLogger("SyncService")
 
 # ==========================================
-# Telegram Bot Commands (Wrapper)
+# Kern-Aktionen
 # ==========================================
-if HAS_TELEGRAM:
-    async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        from database import DatabaseManager
+
+async def send_telegram_report(text):
+    if not TOKEN or not CHAT_ID: return
+    url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "Markdown"}
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"Telegram Report Fehler: {resp.status}")
+    except Exception as e:
+        logger.error(f"Fehler beim Senden des Reports: {e}")
+
+async def run_status_report():
+    """Holt Statistiken und sendet sie an Telegram."""
+    logger.info("Sende geplanten Status-Report...")
+    db_url = os.getenv("DATABASE_URL")
+    pool = await DatabaseManager.create_pool(db_url)
+    try:
+        stats = await DatabaseManager.get_library_stats(pool)
+        msg = (
+            "📊 *Automatischer System-Status*\n\n"
+            f"📥 *Pipeline (Wartend):* {stats['pipeline']:,}\n"
+            f"✅ *Bereit für eBay:* {stats['ready']:,}\n"
+            f"📦 *Auf eBay gelistet:* {stats['listed']:,}\n"
+            f"🗑️ *Aussortiert/Gefiltert:* {stats['filtered']:,}\n\n"
+            "_Dienst läuft planmäßig._"
+        ).replace(",", ".")
+        await send_telegram_report(msg)
+    except Exception as e:
+        logger.error(f"Fehler beim Status-Report: {e}")
+    finally:
+        await pool.close()
+
+async def run_full_sync():
+# ... (Rest der bestehenden Funktionen bleibt gleich)
+    """Führt Urlaub, Bestandsabgleich und Preis-Sync aus."""
+    logger.info("=== STARTE FULL SYNC (Urlaub, eBay, BL) ===")
+    try:
+        # 1. Urlaub
+        logger.info("Prüfe Urlaubs-Rückkehrer...")
+        await reactivate_vacation_main()
+        
+        # 2. eBay Bestandsabgleich (Löscht Differenzen)
+        logger.info("Starte eBay-Bestandsabgleich...")
         db_url = os.getenv("DATABASE_URL")
         pool = await DatabaseManager.create_pool(db_url)
         try:
-            stats = await DatabaseManager.get_library_stats(pool)
-            msg = (
-                "📊 *Aktueller System-Status*\n\n"
-                f"📥 *Pipeline (Wartend):* {stats['pipeline']:,}\n"
-                f"✅ *Bereit für eBay:* {stats['ready']:,}\n"
-                f"📦 *Auf eBay gelistet:* {stats['listed']:,}\n"
-                f"🗑️ *Aussortiert/Gefiltert:* {stats['filtered']:,}\n\n"
-                "_Der Sync-Dienst läuft stabil im Hintergrund._"
-            ).replace(",", ".")
-            await update.message.reply_text(msg, parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"❌ Fehler beim Abrufen der Stats: {e}")
+            await ebay_inventory_check.run_inventory_sync(pool)
         finally:
             await pool.close()
 
-    async def cmd_sync_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("🚀 Manueller Sync via Telegram gestartet...")
-        # Hier könnte man ein Event setzen, um den Sync sofort zu triggern
-        # Für den Moment dient es als Status-Bestätigung
+        # 3. Preis- & Status-Sync (Booklooker)
+        logger.info("Starte Preis- & Bestands-Sync (BL)...")
+        await sync_ebay_main()
+        
+        logger.info("=== FULL SYNC ABGESCHLOSSEN ===")
+    except Exception as e:
+        logger.error(f"Fehler im Full Sync: {e}")
+
+async def run_scraping():
+    """Führt das Scraping neuer Links aus main.py aus."""
+    logger.info("=== STARTE AUTOMATISCHES SCRAPING ===")
+    try:
+        db_url = os.getenv("DATABASE_URL")
+        pool = await DatabaseManager.create_pool(db_url)
+        try:
+            # Wir laden Links aus links.txt (wie in main.py)
+            links_to_scrape = []
+            links_file_path = "links.txt"
+            if os.path.exists(links_file_path):
+                with open(links_file_path, "r", encoding="utf-8") as file:
+                    for line in file:
+                        line = line.strip()
+                        if line and not line.startswith("#"):
+                            links_to_scrape.append(line)
+            
+            if links_to_scrape:
+                await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool)
+            
+            await scrape.scrape_and_save_pages(pool)
+            await scrape.perform_webscrape_async(pool)
+            logger.info("=== SCRAPING ABGESCHLOSSEN ===")
+        finally:
+            await pool.close()
+    except Exception as e:
+        logger.error(f"Fehler beim Scraping: {e}")
 
 # ==========================================
-# Haupt-Schleife (24/7 Service)
+# Haupt-Schleife (Schedule)
 # ==========================================
 async def service_loop():
-    """Die 24/7 Hauptschleife, die die heute optimierten Skripte nutzt."""
-    # Intervall aus .env (Sekunden), Standard: 6 Stunden
-    SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL_SECONDS", 21600)) 
+    logger.info("✅ Sync-Service (Scheduled) gestartet.")
     
-    logger.info(f"✅ Sync-Service gestartet. Intervall: {SYNC_INTERVAL/3600:.1f} Stunden.")
-    
+    last_sync_day = None
+    last_scrape_day = None
+    last_report_time = None # Speichert "YYYY-MM-DD HH:MM"
+
     while True:
         try:
-            logger.info("=== STARTE AUTOMATISCHEN SYNC-DURCHLAUF ===")
-            
-            # 1. Schritt: Urlaubs-Reaktivierung (heutiger Stand)
-            logger.info("Prüfe Urlaubs-Rückkehrer...")
-            await reactivate_vacation_main()
-            
-            # 2. Schritt: Bestands- & Preis-Abgleich (heutiger Stand inkl. 410-Fix)
-            logger.info("Starte Bestands- & Preis-Sync...")
-            await sync_ebay_main()
-            
-            logger.info(f"=== DURCHLAUF ABGESCHLOSSEN. Nächster Start in {SYNC_INTERVAL/3600:.1f}h ===")
-            await asyncio.sleep(SYNC_INTERVAL)
+            if os.path.exists("stop_service.flag"):
+                logger.warning("Stop-Flag gefunden. Beende Service...")
+                os.remove("stop_service.flag")
+                break
+
+            now = datetime.now()
+            today = now.date()
+            now_str = now.strftime("%H:%M")
+            day_hour_str = now.strftime("%Y-%m-%d %H:%M")
+            config = load_bot_config()
+
+            # 1. Check Sync (03:00)
+            sync_time_parts = [int(x) for x in config.get("sync_time", "03:00").split(":")]
+            if config.get("auto_sync") and last_sync_day != today:
+                if now.hour == sync_time_parts[0] and now.minute >= sync_time_parts[1]:
+                    await run_full_sync()
+                    last_sync_day = today
+
+            # 2. Check Scrape (10:00)
+            scrape_time_parts = [int(x) for x in config.get("scrape_time", "10:00").split(":")]
+            if config.get("auto_scrape") and last_scrape_day != today:
+                if now.hour == scrape_time_parts[0] and now.minute >= scrape_time_parts[1]:
+                    await run_scraping()
+                    last_scrape_day = today
+
+            # 3. Check Reports (09:00 & 18:00)
+            report_times = config.get("report_times", ["09:00", "18:00"])
+            if now_str in report_times and last_report_time != day_hour_str:
+                await run_status_report()
+                last_report_time = day_hour_str
+
+            await asyncio.sleep(30) # Alle 30 Sek prüfen für präzise Reports
             
         except Exception as e:
-            logger.error(f"❌ Kritischer Fehler im Service-Loop: {e}")
-            await asyncio.sleep(600) # Bei Fehler 10 Min warten und neu versuchen
+            logger.error(f"Kritischer Fehler im Service-Loop: {e}")
+            await asyncio.sleep(600)
+
 
 async def main():
-    # Starte den Sync-Loop als Hintergrund-Task
-    asyncio.create_task(service_loop())
-
-    # Starte Telegram Bot (falls konfiguriert)
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if HAS_TELEGRAM and bot_token:
-        logger.info("Starte Telegram Bot Interface...")
-        try:
-            app = ApplicationBuilder().token(bot_token).build()
-            app.add_handler(CommandHandler("status", cmd_status))
-            app.add_handler(CommandHandler("sync", cmd_sync_now))
-            
-            await app.initialize()
-            await app.start()
-            await app.updater.start_polling()
-            
-            # Prozess am Leben halten
-            while True:
-                await asyncio.sleep(3600)
-        except Exception as e:
-            logger.error(f"Telegram Bot konnte nicht gestartet werden: {e}")
-            while True: await asyncio.sleep(3600)
-    else:
-        logger.info("Kein Telegram-Token gefunden. Service läuft ohne Messenger-Anbindung.")
-        while True:
-            await asyncio.sleep(3600)
+    await service_loop()
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Service durch Benutzer beendet.")
+

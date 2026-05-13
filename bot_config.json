@@ -1,0 +1,6 @@
+{
+  "auto_scrape": true,
+  "auto_sync": true,
+  "scrape_time": "10:00",
+  "sync_time": "03:00"
+}

@@ -414,7 +414,9 @@ async def mark_as_error(db_pool, internal_id: int, error_msg: str):
         """, error_msg, internal_id)
 
 
-async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, db_pool, token: str, base_url: str, policies: dict):
+async def _process_single_book(session: aiohttp.ClientSession, book_data: dict, db_pool, base_url: str, policies: dict):
+    from ebay_token_manager import get_token
+    token = get_token()
     internal_id = book_data['id']
     isbn = book_data['isbn']
     title = book_data.get('title', 'Unknown Title')
@@ -567,6 +569,12 @@ async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
                 return {"success": 0, "failed": 1, "skipped": 0}
 
         logger.info("Starting eBay Upload Batch...")
+        
+        stop_flag = os.path.join(os.getcwd(), "stop_upload.flag")
+        if os.path.exists(stop_flag):
+            logger.warning("SICHERHEITS-STOPP: 'stop_upload.flag' gefunden. Upload-Batch wird abgebrochen.")
+            return {"success": 0, "failed": 0, "skipped": limit, "top_error": "Stop Flag Found"}
+
         books = await get_unlisted_books(db_pool, specific_ids=specific_ids, limit=limit)
         
         if not books:
@@ -576,7 +584,7 @@ async def run_upload_batch(db_pool, specific_ids: list = None, limit: int = 50):
         logger.info(f"Found {len(books)} books to upload.")
 
         tasks = [
-            asyncio.create_task(_process_single_book(session, book, db_pool, EBAY_USER_TOKEN, EBAY_BASE_URL, policies))
+            asyncio.create_task(_process_single_book(session, book, db_pool, EBAY_BASE_URL, policies))
             for book in books
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
