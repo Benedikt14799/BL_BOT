@@ -64,9 +64,18 @@ def is_service_running():
         try:
             with open(PID_FILE, "r") as f:
                 pid = int(f.read().strip())
-            # Check if process exists on Windows
-            output = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True).decode()
-            return str(pid) in output
+            
+            if os.name == 'nt':
+                # Windows Check
+                output = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True).decode()
+                return str(pid) in output
+            else:
+                # Linux/Unix Check
+                try:
+                    os.kill(pid, 0)
+                    return True
+                except OSError:
+                    return False
         except:
             return False
     return False
