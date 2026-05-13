@@ -57,13 +57,58 @@ async def reactivate_vacation(pool):
             status, info = is_sold(html, soup, ek)
             
             if status == "OK":
-                logger.info(f"✅ [{sku}] ist wieder verfügbar!")
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE library SET ebay_status = 'pending', vacation_until = NULL WHERE id = $1",
-                        item["id"]
+                # Rentabilitäts-Check hinzufügen
+                ship = PriceProcessing._safe_extract_shipping(soup)
+                
+                # Kostenparameter laden
+                def to_dec(val, default):
+                    if not val: return Decimal(default)
+                    return Decimal(str(val).replace(",", "."))
+                
+                cost_params = {
+                    "fixed_costs": to_dec(os.getenv("FIXKOSTEN_MONATLICH"), "79.95"),
+                    "expected_sales": int(os.getenv("ERWARTETE_VERKAEUFE", "200")),
+                    "steuer_satz": to_dec(os.getenv("STEUERSATZ"), "7.0"),
+                    "addcost_low_mid": to_dec(os.getenv("ZUSATZKOSTEN_LOW_MID"), "0.50"),
+                    "addcost_high": to_dec(os.getenv("ZUSATZKOSTEN_HIGH"), "1.75"),
+                }
+                
+                target_ebay_price = PriceProcessing._compute_final_price(
+                    ek, ship, cost_params["addcost_low_mid"], cost_params["addcost_high"], 
+                    cost_params["steuer_satz"], cost_params["fixed_costs"], cost_params["expected_sales"]
+                )
+                
+                is_rentabel = False
+                if target_ebay_price:
+                    prof = PriceProcessing.calculate_profitability(
+                        ek, ship, target_ebay_price,
+                        monthly_fixed_costs=cost_params["fixed_costs"], expected_sales=cost_params["expected_sales"],
+                        addcost_low_mid=cost_params["addcost_low_mid"], addcost_high=cost_params["addcost_high"], steuer_satz=cost_params["steuer_satz"]
                     )
-                reactivated_count += 1
+                    is_rentabel = prof.get("rentabel", False)
+                
+                if is_rentabel:
+                    logger.info(f"✅ [{sku}] ist wieder verfügbar und rentabel!")
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """UPDATE library 
+                               SET ebay_status = 'pending', start_price = $1, 
+                                   purchase_price = $2, purchase_shipping = $3, 
+                                   vacation_until = NULL, last_checked = NOW() 
+                               WHERE id = $4""",
+                            target_ebay_price, ek, ship, item["id"]
+                        )
+                    reactivated_count += 1
+                else:
+                    logger.warning(f"❌ [{sku}] wieder da, aber UNRENTABEL (EK: {ek}€). Markiere als aussortiert.")
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """UPDATE library 
+                               SET ebay_status = 'delisted', ebay_delisted_reason = 'Nach Urlaub unrentabel',
+                                   vacation_until = NULL, last_checked = NOW() 
+                               WHERE id = $1""",
+                            item["id"]
+                        )
                 
     return {"found": len(items), "reactivated": reactivated_count}
 
