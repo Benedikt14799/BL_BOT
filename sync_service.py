@@ -137,6 +137,7 @@ async def service_loop():
     last_sync_day = None
     last_scrape_day = None
     last_report_time = None # Speichert "YYYY-MM-DD HH:MM"
+    last_order_sync_time = None
 
     while True:
         try:
