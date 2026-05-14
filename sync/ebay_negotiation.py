@@ -111,10 +111,17 @@ class eBayNegotiation:
                     logger.warning(f"Überspringe Listing {listing_id}: Kein gewinn_real in DB.")
                     continue
 
-                # 1. Daten holen (Vorrang für DB-Preis, da eBay API oft 0 liefert)
+                # 1. Daten holen (Wir nehmen den NIEDRIGEREN Preis, um Fehler zu vermeiden)
                 db_price = Decimal(str(db.get("start_price") or 0))
-                api_price = Decimal(str(item.get("display_price", {}).get("value", "0")))
-                current_p = db_price if db_price > 0 else api_price
+                
+                # Wir schauen, ob eBay uns einen aktuellen Preis liefert
+                ebay_price_data = item.get("listingPrice") or item.get("price") or {}
+                api_price = Decimal(str(ebay_price_data.get("value", "0")))
+                
+                if api_price > 0 and db_price > 0:
+                    current_p = min(db_price, api_price)
+                else:
+                    current_p = db_price if db_price > 0 else api_price
                 
                 gewinn_real = Decimal(str(db.get("gewinn_real") or 0))
                 if current_p <= 0 or gewinn_real <= 0:
