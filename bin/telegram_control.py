@@ -16,6 +16,7 @@ from sync.booklooker.reactivate_vacation import reactivate_vacation
 from sync.booklooker import ebay as sync_ebay
 from sync import ebay_inventory_check
 from sync.ebay_orders import process_orders, generate_daily_report
+from sync.ebay_negotiation import eBayNegotiation
 from database import DatabaseManager
 import ebay_upload
 
@@ -240,6 +241,44 @@ async def run_report():
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
+async def run_watchers():
+    await send_message_async("🔍 *Suche nach Artikeln mit Beobachtern...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        neg = eBayNegotiation(pool)
+        items = await neg.find_eligible_items()
+        
+        if not items:
+            await send_message_async("ℹ️ Aktuell keine Artikel für Preisvorschläge berechtigt.")
+        else:
+            msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
+            for item in items[:15]: # Max 15 anzeigen
+                val = item.get("price", {}).get("value", "0")
+                curr = item.get("price", {}).get("currency", "EUR")
+                msg += f"• Listing `{item.get('listingId')}`: {val} {curr}\n"
+            
+            if len(items) > 15:
+                msg += f"\n... und {len(items)-15} weitere."
+            
+            msg += f"\n\nNutze `/send_offers 5` um 5% Rabatt an alle zu senden."
+            await send_message_async(msg)
+    except Exception as e:
+        await send_message_async(f"❌ Fehler: {e}")
+    finally:
+        if 'pool' in locals() and pool: await pool.close()
+
+async def run_send_offers(percent):
+    await send_message_async(f"🚀 *Sende {percent}% Rabatt-Angebote an alle Beobachter...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        neg = eBayNegotiation(pool)
+        count = await neg.send_offers_to_watchers(discount_percent=percent)
+        await send_message_async(f"✅ Erfolgreich *{count} Angebote* verschickt!")
+    except Exception as e:
+        await send_message_async(f"❌ Fehler: {e}")
+    finally:
+        if 'pool' in locals() and pool: await pool.close()
+
 async def handle_update(update):
     if "message" not in update: return
     msg = update["message"]
@@ -359,6 +398,17 @@ async def handle_update(update):
             await send_message_async(f"✅ Kostenpunkt ID {cid} gelöscht.")
         except Exception as e:
             await send_message_async(f"❌ Fehler: {e}")
+    elif text == "/watchers":
+        asyncio.create_task(run_watchers())
+    elif text.startswith("/send_offers"):
+        try:
+            parts = text.split()
+            percent = 5 # Default
+            if len(parts) > 1:
+                percent = int(parts[1])
+            asyncio.create_task(run_send_offers(percent))
+        except:
+            await send_message_async("❌ Bitte gib eine Zahl ein, z.B. `/send_offers 10`")
 
 async def main():
     logger.info("Telegram Control Bot gestartet...")
