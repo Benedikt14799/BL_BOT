@@ -253,19 +253,18 @@ async def run_watchers():
             await send_message_async("ℹ️ Aktuell keine Artikel für Preisvorschläge berechtigt.")
         else:
             msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
-            # Wir holen uns die Titel aus der DB für diese IDs
-            async with pool.acquire() as conn:
-                for item in items[:30]: # Max 30 anzeigen
-                    listing_id = item.get('listingId')
-                    price_data = item.get("display_price", {})
-                    val = price_data.get("value", "0")
-                    curr = price_data.get("currency", "EUR")
-                    
-                    # Titel aus DB suchen
-                    title = await conn.fetchval("SELECT title FROM library WHERE ebay_item_id = $1", int(listing_id))
-                    title_str = title[:35] + "..." if title and len(title) > 35 else (title or "Unbekannter Titel")
-                    
-                    msg += f"• {title_str}\n  └ `{listing_id}`: *{val} {curr}*\n"
+            # Wir nutzen die bereits angereicherten Titel aus der DB
+            for item in items[:30]: # Max 30 anzeigen
+                listing_id = item.get('listingId')
+                price_data = item.get("display_price", {})
+                val = price_data.get("value", "0")
+                curr = price_data.get("currency", "EUR")
+                
+                db_info = item.get("db_data") or {}
+                title = db_info.get("title")
+                title_str = title[:35] + "..." if title and len(title) > 35 else (title or "Unbekannter Titel")
+                
+                msg += f"• {title_str}\n  └ `{listing_id}`: *{val} {curr}*\n"
             
             if len(items) > 30:
                 msg += f"\n... und {len(items)-30} weitere."

@@ -61,14 +61,14 @@ class eBayNegotiation:
         async with self.db_pool.acquire() as conn:
             for item in items:
                 lid = item.get("listingId")
-                # Preis robust extrahieren
-                ebay_price_data = item.get("price") or item.get("listingPrice") or {}
+                # Preis robust extrahieren (eBay nutzt oft 'listingPrice' in dieser API)
+                ebay_price_data = item.get("listingPrice") or item.get("price") or {}
                 val = Decimal(str(ebay_price_data.get("value", "0")))
                 curr = ebay_price_data.get("currency", "EUR")
 
                 # DB Lookup
                 row = await conn.fetchrow("""
-                    SELECT id, sku, purchase_price, purchase_shipping, margin, start_price 
+                    SELECT id, sku, title, purchase_price, purchase_shipping, margin, start_price, gewinn_real
                     FROM library 
                     WHERE ebay_listing_id = $1 OR ebay_item_id::text = $1
                 """, lid)
