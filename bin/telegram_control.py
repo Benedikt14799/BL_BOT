@@ -6,6 +6,7 @@ import aiohttp
 import subprocess
 import json
 import signal
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Importiere die Kern-Logik aus den bestehenden Modulen
@@ -253,8 +254,9 @@ async def run_watchers():
         else:
             msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
             for item in items[:15]: # Max 15 anzeigen
-                val = item.get("price", {}).get("value", "0")
-                curr = item.get("price", {}).get("currency", "EUR")
+                price_data = item.get("display_price", {})
+                val = price_data.get("value", "0")
+                curr = price_data.get("currency", "EUR")
                 msg += f"• Listing `{item.get('listingId')}`: {val} {curr}\n"
             
             if len(items) > 15:
