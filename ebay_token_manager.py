@@ -23,9 +23,9 @@ class EbayTokenManager:
     """Verwaltet den eBay OAuth2 Access Token mit automatischem Refresh."""
 
     def __init__(self):
-        self.client_id = os.getenv("EBAY_CLIENT_ID", "").strip().strip("'").strip('"')
-        self.client_secret = os.getenv("EBAY_CLIENT_SECRET", "").strip().strip("'").strip('"')
-        self.refresh_token = os.getenv("EBAY_REFRESH_TOKEN", "").strip().strip("'").strip('"')
+        self.client_id = os.getenv("EBAY_CLIENT_ID")
+        self.client_secret = os.getenv("EBAY_CLIENT_SECRET")
+        self.refresh_token = os.getenv("EBAY_REFRESH_TOKEN")
         self.access_token = None
         self.token_expiry = 0
 
