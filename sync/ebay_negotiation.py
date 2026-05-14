@@ -111,10 +111,15 @@ class eBayNegotiation:
                     logger.warning(f"Überspringe Listing {listing_id}: Kein gewinn_real in DB.")
                     continue
 
-                # 1. Daten holen
-                current_p = Decimal(str(item["display_price"]["value"]))
-                gewinn_real = Decimal(str(db["gewinn_real"]))
-                if current_p <= 0 or gewinn_real <= 0: continue
+                # 1. Daten holen (Vorrang für DB-Preis, da eBay API oft 0 liefert)
+                db_price = Decimal(str(db.get("start_price") or 0))
+                api_price = Decimal(str(item.get("display_price", {}).get("value", "0")))
+                current_p = db_price if db_price > 0 else api_price
+                
+                gewinn_real = Decimal(str(db.get("gewinn_real") or 0))
+                if current_p <= 0 or gewinn_real <= 0:
+                    logger.warning(f"Überspringe {listing_id}: Kein Preis ({current_p}) oder Gewinn ({gewinn_real}) vorhanden.")
+                    continue
                 
                 # 2. Wie viel Rabatt (in €) entspricht X% des Gewinns?
                 rabatt_euro = gewinn_real * (Decimal(str(profit_share_percent)) / Decimal("100"))
