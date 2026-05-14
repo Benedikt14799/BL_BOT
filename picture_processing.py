@@ -43,7 +43,7 @@ class PictureProcessing:
             dnb_url = f"https://portal.dnb.de/opac/mvb/cover?isbn={isbn}"
             try:
                 async with dnb_semaphore:
-                    async with session.get(dnb_url, timeout=10) as resp:
+                    async with session.get(dnb_url, timeout=30) as resp:
                         if resp.status == 200:
                             picture_links.append(dnb_url)
                             logger.debug(f"[{num}] DNB-Cover hinzugefügt: {dnb_url}")
