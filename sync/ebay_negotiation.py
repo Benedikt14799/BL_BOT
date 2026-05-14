@@ -140,7 +140,7 @@ class eBayNegotiation:
 
                 # 5. Angebot senden (Direktes Objekt, keine "offers"-Liste!)
                 payload = {
-                    "allowCounterOffer": True,
+                    "allowCounterOffer": False,
                     "message": "Vielen Dank für Ihr Interesse! Hier ist ein exklusives Angebot für Sie.",
                     "offerDuration": {"value": 2, "unit": "DAY"},
                     "offeredItems": [
