@@ -253,14 +253,22 @@ async def run_watchers():
             await send_message_async("ℹ️ Aktuell keine Artikel für Preisvorschläge berechtigt.")
         else:
             msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
-            for item in items[:15]: # Max 15 anzeigen
-                price_data = item.get("display_price", {})
-                val = price_data.get("value", "0")
-                curr = price_data.get("currency", "EUR")
-                msg += f"• Listing `{item.get('listingId')}`: {val} {curr}\n"
+            # Wir holen uns die Titel aus der DB für diese IDs
+            async with pool.acquire() as conn:
+                for item in items[:30]: # Max 30 anzeigen
+                    listing_id = item.get('listingId')
+                    price_data = item.get("display_price", {})
+                    val = price_data.get("value", "0")
+                    curr = price_data.get("currency", "EUR")
+                    
+                    # Titel aus DB suchen
+                    title = await conn.fetchval("SELECT title FROM library WHERE ebay_item_id = $1", listing_id)
+                    title_str = title[:35] + "..." if title and len(title) > 35 else (title or "Unbekannter Titel")
+                    
+                    msg += f"• {title_str}\n  └ `{listing_id}`: *{val} {curr}*\n"
             
-            if len(items) > 15:
-                msg += f"\n... und {len(items)-15} weitere."
+            if len(items) > 30:
+                msg += f"\n... und {len(items)-30} weitere."
             
             msg += f"\n\nNutze `/send_offers 35` um 35% deines Gewinns als Rabatt zu geben."
             await send_message_async(msg)
@@ -288,7 +296,10 @@ async def handle_update(update):
     sender_id = str(msg["chat"]["id"])
     if sender_id != CHAT_ID: return
 
-    if text in ["/start", "/help"]:
+    # Robustere Befehlsprüfung
+    cmd = text.split()[0].lower().split("@")[0] if text else ""
+    
+    if cmd in ["/start", "/help"]:
         res = await start_service()
         msg = (f"{res}\n\n"
                f"📋 *Alle Befehle:*\n"
