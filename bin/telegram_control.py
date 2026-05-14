@@ -298,6 +298,15 @@ async def handle_update(update):
         try:
             pool = await DatabaseManager.create_pool(DB_URL)
             async with pool.acquire() as conn:
+                # Sicherheits-Check: Tabelle händisch anlegen, falls sie fehlt
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS fixed_costs (
+                        id SERIAL PRIMARY KEY,
+                        label VARCHAR(255) NOT NULL,
+                        amount NUMERIC(10, 2) NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                """)
                 rows = await conn.fetch("SELECT id, label, amount FROM fixed_costs ORDER BY id")
                 if not rows:
                     await send_message_async("ℹ️ Keine Fixkosten hinterlegt. Nutze `/add_cost Name Betrag`.")
@@ -322,6 +331,15 @@ async def handle_update(update):
             amount = float(parts[2].replace(",", "."))
             pool = await DatabaseManager.create_pool(DB_URL)
             async with pool.acquire() as conn:
+                # Auch hier Sicherheits-Check
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS fixed_costs (
+                        id SERIAL PRIMARY KEY,
+                        label VARCHAR(255) NOT NULL,
+                        amount NUMERIC(10, 2) NOT NULL,
+                        created_at TIMESTAMP DEFAULT NOW()
+                    );
+                """)
                 await conn.execute("INSERT INTO fixed_costs (label, amount) VALUES ($1, $2)", label, amount)
             await pool.close()
             await send_message_async(f"✅ Kostenpunkt *{label}* ({amount:.2f}€) hinzugefügt.")
