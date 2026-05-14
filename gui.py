@@ -223,6 +223,16 @@ class BLBotApp(tb.Window):
                     return None
         return self.db_pool
 
+    def stop_sync_action(self):
+        """Erzeugt eine Flag-Datei, um den Sync-Prozess zu stoppen."""
+        try:
+            with open("stop_sync.flag", "w") as f:
+                f.write("STOP")
+            logging.info("🛑 Stopp-Signal gesendet! Der Prozess wird beim nächsten Item beendet.")
+            messagebox.showinfo("Stop", "Stopp-Signal gesendet. Der Sync-Prozess wird in Kürze abgebrochen.")
+        except Exception as e:
+            logging.error(f"Fehler beim Senden des Stopp-Signals: {e}")
+
     def on_closing(self):
         """Cleanup before closing the window."""
         if not messagebox.askyesno("Beenden", "Möchtest du den BL_BOT wirklich beenden?"):
@@ -265,6 +275,10 @@ class BLBotApp(tb.Window):
         self.btn_inventory_sync = tb.Button(controls, text="📦 Bestandsabgleich (eBay)", bootstyle=WARNING, command=self.start_inventory_sync)
         self.btn_inventory_sync.pack(side=LEFT, padx=10)
         ToolTip(self.btn_inventory_sync, text="Gleicht den eBay-Bestand mit der DB ab. Löscht Einträge in DB, die auf eBay nicht mehr existieren.", bootstyle=INFO, delay=100)
+
+        self.btn_stop_sync = tb.Button(controls, text="🛑 Sync Stoppen", bootstyle=(DANGER, OUTLINE), command=self.stop_sync_action)
+        self.btn_stop_sync.pack(side=LEFT, padx=10)
+        ToolTip(self.btn_stop_sync, text="Bricht den aktuellen Bestands- & Preis-Sync sofort ab.", bootstyle=DANGER, delay=100)
 
 
 

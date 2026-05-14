@@ -56,6 +56,7 @@ USER_AGENTS = [
 # Delay zwischen Requests (Sekunden) – schont BookLooker
 BASE_DELAY = 8.0
 JITTER = 0.3  # ±30 %
+STOP_FLAG = os.path.join(PROJECT_ROOT, "stop_sync.flag")
 
 
 async def fetch_bl_html(session: aiohttp.ClientSession, url: str) -> str:
@@ -608,6 +609,10 @@ async def worker(
 ):
     """Holt Items aus der Queue und verarbeitet sie."""
     while True:
+        if os.path.exists(STOP_FLAG):
+            logger.warning(f"{worker_id} Stopp-Signal erkannt. Beende Worker...")
+            break
+            
         record = await queue.get()
         try:
             # Token bei jedem Item auffrischen (EbayTokenManager sorgt für Effizienz)
@@ -642,6 +647,10 @@ async def run_sync(pool):
     logger.info("=" * 60)
     logger.info("BookLooker ↔ eBay Bestandsabgleich gestartet (PARALLEL)")
     logger.info("=" * 60)
+
+    # Stopp-Flag löschen, falls vorhanden
+    if os.path.exists(STOP_FLAG):
+        os.remove(STOP_FLAG)
 
     # Kostenparameter laden
     cost_params = _get_cost_params()
