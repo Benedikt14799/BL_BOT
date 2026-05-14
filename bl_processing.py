@@ -34,6 +34,7 @@ class PropertyToDatabase:
         "backup2_price": ["backup2_price"],
         "backup2_shipping": ["backup2_shipping"],
         "backup2_is_private": ["backup2_is_private"],
+        "seitenanzahl": ["seitenanzahl"],
     }
 
     PRODUCTART_MAP = {
