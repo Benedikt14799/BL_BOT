@@ -252,6 +252,7 @@ async def run_watchers():
         if not items:
             await send_message_async("ℹ️ Aktuell keine Artikel für Preisvorschläge berechtigt.")
         else:
+            msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
             # Wir nutzen die angereicherten Daten aus der DB
             for item in items[:20]: # Max 20 für bessere Übersicht
                 listing_id = item.get('listingId')
