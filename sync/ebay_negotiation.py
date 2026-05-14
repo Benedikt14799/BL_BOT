@@ -138,22 +138,19 @@ class eBayNegotiation:
                     logger.info(f"Überspringe {listing_id}: {profit_share_percent}% vom Gewinn ({rabatt_euro:.2f}€) sind nur {discount_percent}% Rabatt. (eBay verlangt mind. 5%)")
                     continue
 
-                # 5. Angebot senden (Wir senden den Preis direkt, das ist robuster als Prozente)
+                # 5. Angebot senden (Direktes Objekt, keine "offers"-Liste!)
                 payload = {
-                    "offers": [
+                    "allowCounterOffer": True,
+                    "message": "Vielen Dank für Ihr Interesse! Hier ist ein exklusives Angebot für Sie.",
+                    "offerDuration": {"value": 2, "unit": "DAY"},
+                    "offeredItems": [
                         {
-                            "allowCounterOffer": True,
-                            "message": f"Vielen Dank für Ihr Interesse! Hier ist ein exklusives Angebot für Sie.",
-                            "offerDuration": {"value": 2, "unit": "DAY"},
-                            "offeredItems": [
-                                {
-                                    "listingId": listing_id,
-                                    "price": {
-                                        "value": f"{new_price:.2f}",
-                                        "currency": "EUR"
-                                    }
-                                }
-                            ]
+                            "listingId": listing_id,
+                            "quantity": 1,
+                            "price": {
+                                "value": f"{new_price:.2f}",
+                                "currency": "EUR"
+                            }
                         }
                     ]
                 }
