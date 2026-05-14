@@ -81,23 +81,15 @@ class eBayNegotiation:
                     enriched.append(item)
         return enriched
 
-    async def send_offers_to_watchers(self, discount_percent=5):
+    async def send_offers_to_watchers(self, profit_share_percent=10):
         """
-        Sendet Angebote an Beobachter, ABER NUR wenn die Marge nach Rabatt 
-        noch über der Mindestgrenze liegt.
+        Sendet Angebote basierend auf einem Anteil des tatsächlichen Gewinns.
+        Beispiel: Gib 10% deines Gewinns als Rabatt weiter.
         """
-        from price_processing import PriceProcessing
-        
         eligible_items = await self.find_eligible_items()
         if not eligible_items:
             logger.info("Keine Artikel für Preisvorschläge gefunden.")
             return 0
-
-        # Fixkosten holen für die Berechnung
-        async with self.db_pool.acquire() as conn:
-            fixed_costs = await conn.fetchval("SELECT SUM(amount) FROM fixed_costs") or 0
-            # Annahme: 200 Verkäufe/Monat für die Kalkulation
-            expected_sales = 200 
 
         token = await self.get_token()
         url = f"{self.base_url}/sell/negotiation/v1/send_offer_to_interested_buyers"
@@ -113,40 +105,34 @@ class eBayNegotiation:
                 listing_id = item.get("listingId")
                 db = item.get("db_data")
                 
-                if not db:
-                    logger.warning(f"Überspringe Listing {listing_id}: Keine Daten in lokaler DB gefunden.")
+                if not db or not db.get("gewinn_real"):
+                    logger.warning(f"Überspringe Listing {listing_id}: Kein gewinn_real in DB.")
                     continue
 
-                # 1. Neuen Preis berechnen
+                # 1. Daten holen
                 current_p = Decimal(str(item["display_price"]["value"]))
-                if current_p <= 0: continue
+                gewinn_real = Decimal(str(db["gewinn_real"]))
+                if current_p <= 0 or gewinn_real <= 0: continue
                 
-                discount_factor = Decimal(str(1 - (discount_percent / 100)))
-                new_p = (current_p * discount_factor).quantize(Decimal("0.01"))
+                # 2. Wie viel Rabatt (in €) entspricht X% des Gewinns?
+                rabatt_euro = gewinn_real * (Decimal(str(profit_share_percent)) / Decimal("100"))
                 
-                # 2. Profitabilität prüfen
-                prof = PriceProcessing.calculate_profitability(
-                    ek=db["purchase_price"] or 0,
-                    bl_shipping=db["purchase_shipping"] or 0,
-                    ebay_p=new_p,
-                    monthly_fixed_costs=Decimal(str(fixed_costs)),
-                    expected_sales=expected_sales,
-                    min_margin=Decimal("0.50"), # Absolute Untergrenze für Angebote
-                    addcost_low_mid=Decimal("0.00"),
-                    addcost_high=Decimal("0.00"),
-                    steuer_satz=Decimal("7.0")
-                )
-
-                if not prof["rentabel"]:
-                    logger.info(f"Überspringe {listing_id}: Rabatt ({discount_percent}%) nicht profitabel (Marge wäre {prof['marge']}€).")
+                # 3. Welchem Prozentsatz vom Verkaufspreis entspricht das?
+                # Formel: (Rabatt_Euro / Verkaufspreis) * 100
+                discount_percent_raw = (rabatt_euro / current_p) * Decimal("100")
+                discount_percent = int(discount_percent_raw) # Abrunden auf ganze Zahl
+                
+                # 4. eBay Mindestrabatt-Prüfung (eBay verlangt mind. 5%)
+                if discount_percent < 5:
+                    logger.info(f"Überspringe {listing_id}: {profit_share_percent}% vom Gewinn ({rabatt_euro:.2f}€) sind nur {discount_percent}% Rabatt. (eBay verlangt mind. 5%)")
                     continue
 
-                # 3. Angebot senden
+                # 5. Angebot senden
                 payload = {
                     "offers": [
                         {
                             "allowCounterOffer": True,
-                            "message": f"Vielen Dank für Ihr Interesse! Da Sie diesen Artikel beobachten, biete ich Ihnen heute einen exklusiven Rabatt von {discount_percent}% an.",
+                            "message": f"Vielen Dank für Ihr Interesse! Hier ist ein exklusives Angebot für Sie.",
                             "offerDuration": {"value": 2, "unit": "DAY"},
                             "offeredItems": [
                                 {
@@ -161,13 +147,15 @@ class eBayNegotiation:
                 try:
                     async with session.post(url, headers=headers, json=payload) as resp:
                         if resp.status in [200, 201, 204, 207]:
-                            logger.info(f"Angebot für Listing {listing_id} gesendet. Neuer Preis: {new_p}€")
+                            logger.info(f"Angebot für {listing_id} gesendet. Rabatt: {discount_percent}% ({rabatt_euro:.2f}€ vom Gewinn)")
                             count += 1
                         else:
                             err_text = await resp.text()
-                            logger.error(f"Fehler beim Senden für {listing_id}: {resp.status} - {err_text}")
+                            logger.error(f"Fehler bei {listing_id}: {resp.status} - {err_text}")
                 except Exception as e:
-                    logger.error(f"Exception beim Senden für {listing_id}: {e}")
+                    logger.error(f"Exception bei {listing_id}: {e}")
+
+        return count
 
         return count
 

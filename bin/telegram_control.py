@@ -262,19 +262,19 @@ async def run_watchers():
             if len(items) > 15:
                 msg += f"\n... und {len(items)-15} weitere."
             
-            msg += f"\n\nNutze `/send_offers 5` um 5% Rabatt an alle zu senden."
+            msg += f"\n\nNutze `/send_offers 10` um 10% deines Gewinns als Rabatt zu geben."
             await send_message_async(msg)
     except Exception as e:
         await send_message_async(f"❌ Fehler: {e}")
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
-async def run_send_offers(percent):
-    await send_message_async(f"🚀 *Sende {percent}% Rabatt-Angebote an alle Beobachter...*")
+async def run_send_offers(profit_share):
+    await send_message_async(f"🚀 *Sende Angebote (Rabatt = {profit_share}% deines Gewinns) an alle Beobachter...*")
     try:
         pool = await DatabaseManager.create_pool(DB_URL)
         neg = eBayNegotiation(pool)
-        count = await neg.send_offers_to_watchers(discount_percent=percent)
+        count = await neg.send_offers_to_watchers(profit_share_percent=profit_share)
         await send_message_async(f"✅ Erfolgreich *{count} Angebote* verschickt!")
     except Exception as e:
         await send_message_async(f"❌ Fehler: {e}")
@@ -305,7 +305,7 @@ async def handle_update(update):
                f"• /costs - Fixkosten verwalten\n\n"
                f"👀 *Marketing:*\n"
                f"• /watchers - Beobachter finden\n"
-               f"• /send_offers - Preisvorschläge senden\n\n"
+               f"• /send_offers - Angebote senden (Anteil vom Gewinn)\n\n"
                f"⚙️ *System:*\n"
                f"• /config - Einstellungen (Auto-Sync etc.)\n"
                f"• /stop - Alle Prozesse beenden")
