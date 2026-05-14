@@ -127,7 +127,10 @@ class eBayNegotiation:
                 # 3. Welchem Prozentsatz vom Verkaufspreis entspricht das?
                 # Formel: (Rabatt_Euro / Verkaufspreis) * 100
                 discount_percent_raw = (rabatt_euro / current_p) * Decimal("100")
-                discount_percent = int(discount_percent_raw) # Abrunden auf ganze Zahl
+                
+                import math
+                # Wichtig: Aufrunden auf die nächste ganze Zahl, um eBay's 5% Hürde sicher zu nehmen
+                discount_percent = math.ceil(float(discount_percent_raw))
                 
                 # 4. eBay Mindestrabatt-Prüfung (eBay verlangt mind. 5%)
                 if discount_percent < 5:
