@@ -288,7 +288,7 @@ async def handle_update(update):
     sender_id = str(msg["chat"]["id"])
     if sender_id != CHAT_ID: return
 
-    if text == "/start":
+    if text in ["/start", "/help"]:
         res = await start_service()
         msg = (f"{res}\n\n"
                f"📋 *Alle Befehle:*\n"
