@@ -31,7 +31,8 @@ class eBayNegotiation:
             logger.error("Kein eBay Token verfügbar.")
             return []
 
-        url = f"{self.base_url}/sell/negotiation/v1/find_eligible_items"
+        # Limit auf 100 setzen
+        url = f"{self.base_url}/sell/negotiation/v1/find_eligible_items?limit=100"
         headers = {
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
@@ -44,6 +45,7 @@ class eBayNegotiation:
                     if resp.status == 200:
                         data = await resp.json()
                         items = data.get("eligibleItems", [])
+                        logger.info(f"eBay API hat {len(items)} berechtigte Artikel gemeldet.")
                         return await self._enrich_with_db_data(items)
                     else:
                         err_text = await resp.text()
