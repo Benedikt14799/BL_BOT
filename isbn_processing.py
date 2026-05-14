@@ -52,7 +52,7 @@ async def process_entry(
             dnb_url = f"https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve&query=isbn%3D{isbn}&recordSchema=MARC21-xml"
             try:
                 async with dnb_xml_semaphore:
-                    async with session.get(dnb_url, timeout=10) as resp:
+                    async with session.get(dnb_url, timeout=30) as resp:
                         if resp.status == 200:
                             xml_text = await resp.text()
                             dnb_soup = BeautifulSoup(xml_text, 'xml')
