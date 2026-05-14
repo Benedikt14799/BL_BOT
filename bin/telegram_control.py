@@ -193,6 +193,53 @@ async def run_sales():
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
+async def run_report():
+    await send_message_async("📊 *Generiere Controlling-Bericht...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        async with pool.acquire() as conn:
+            # 1. Alle Fixkosten summieren
+            fixed_costs = await conn.fetchval("SELECT SUM(amount) FROM fixed_costs") or 0
+            
+            # 2. Gewinne des aktuellen Monats holen
+            first_of_month = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            rows = await conn.fetch("""
+                SELECT net_profit FROM ebay_orders 
+                WHERE creation_date >= $1
+            """, first_of_month)
+            
+            total_profit = sum(r["net_profit"] for r in rows) if rows else 0
+            netto_after_fixed = total_profit - fixed_costs
+            
+            # 3. Break-Even Analyse
+            msg = f"📈 *Controlling-Bericht ({datetime.now().strftime('%B')})*\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+            msg += f"💰 Brutto-Gewinn: {total_profit:.2f}€\n"
+            msg += f"🏠 Fixkosten (Summe): {fixed_costs:.2f}€\n"
+            msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+            
+            if netto_after_fixed >= 0:
+                msg += f"✅ *Netto-Gewinn: {netto_after_fixed:.2f}€*\n"
+                msg += f"🥳 Du bist diesen Monat im Plus!"
+            else:
+                needed = abs(netto_after_fixed)
+                msg += f"⚠️ *Netto: {netto_after_fixed:.2f}€*\n"
+                msg += f"📉 Noch {needed:.2f}€ bis zum Break-Even.\n\n"
+                
+                # Durchschnittsgewinn berechnen für Prognose
+                if rows:
+                    avg_profit = total_profit / len(rows)
+                    if avg_profit > 0:
+                        books_needed = int(needed / avg_profit) + 1
+                        msg += f"👉 Du musst noch ca. *{books_needed} Bücher* verkaufen."
+            
+            await send_message_async(msg)
+            
+    except Exception as e:
+        await send_message_async(f"❌ Fehler: {e}")
+    finally:
+        if 'pool' in locals() and pool: await pool.close()
+
 async def handle_update(update):
     if "message" not in update: return
     msg = update["message"]
@@ -245,6 +292,55 @@ async def handle_update(update):
         asyncio.create_task(run_blsync())
     elif text == "/sales":
         asyncio.create_task(run_sales())
+    elif text == "/report":
+        asyncio.create_task(run_report())
+    elif text == "/costs":
+        try:
+            pool = await DatabaseManager.create_pool(DB_URL)
+            async with pool.acquire() as conn:
+                rows = await conn.fetch("SELECT id, label, amount FROM fixed_costs ORDER BY id")
+                if not rows:
+                    await send_message_async("ℹ️ Keine Fixkosten hinterlegt. Nutze `/add_cost Name Betrag`.")
+                else:
+                    msg = "🏠 *Deine Fixkosten-Übersicht:*\n\n"
+                    total = 0
+                    for r in rows:
+                        msg += f"ID {r['id']}: *{r['label']}* - {r['amount']:.2f}€\n"
+                        total += r["amount"]
+                    msg += f"\n━━━━━━━━━━━━\n💰 *Gesamt: {total:.2f}€*"
+                    await send_message_async(msg)
+            await pool.close()
+        except Exception as e:
+            await send_message_async(f"❌ Fehler: {e}")
+    elif text.startswith("/add_cost"):
+        try:
+            parts = text.split(maxsplit=2)
+            if len(parts) < 3:
+                await send_message_async("ℹ️ Nutzung: `/add_cost Name Betrag` (z.B. `/add_cost Miete 50`)")
+                return
+            label = parts[1]
+            amount = float(parts[2].replace(",", "."))
+            pool = await DatabaseManager.create_pool(DB_URL)
+            async with pool.acquire() as conn:
+                await conn.execute("INSERT INTO fixed_costs (label, amount) VALUES ($1, $2)", label, amount)
+            await pool.close()
+            await send_message_async(f"✅ Kostenpunkt *{label}* ({amount:.2f}€) hinzugefügt.")
+        except Exception as e:
+            await send_message_async(f"❌ Fehler: {e}")
+    elif text.startswith("/del_cost"):
+        try:
+            parts = text.split()
+            if len(parts) < 2:
+                await send_message_async("ℹ️ Nutzung: `/del_cost ID` (Die ID findest du über `/costs`)")
+                return
+            cid = int(parts[1])
+            pool = await DatabaseManager.create_pool(DB_URL)
+            async with pool.acquire() as conn:
+                await conn.execute("DELETE FROM fixed_costs WHERE id = $1", cid)
+            await pool.close()
+            await send_message_async(f"✅ Kostenpunkt ID {cid} gelöscht.")
+        except Exception as e:
+            await send_message_async(f"❌ Fehler: {e}")
 
 async def main():
     logger.info("Telegram Control Bot gestartet...")

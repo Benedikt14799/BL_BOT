@@ -327,6 +327,30 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Fehler beim Erstellen der Trigger: {e}")
 
+        # --- Controlling Tabellen (Neu) ---
+        try:
+            # Kostentabelle für Aufschlüsselung
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS fixed_costs (
+                    id SERIAL PRIMARY KEY,
+                    label VARCHAR(255) NOT NULL,
+                    amount NUMERIC(10, 2) NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # Settings Tabelle (allgemein)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS settings (
+                    id SERIAL PRIMARY KEY,
+                    key VARCHAR(50) UNIQUE,
+                    value TEXT
+                );
+            """)
+            logger.info("Controlling-Tabellen initialisiert.")
+        except Exception as e:
+            logger.error(f"Fehler bei Controlling-Initialisierung: {e}")
+
         # Tabellen wurden erfolgreich initialisiert
         logger.info("Datenbank-Initialisierung (Relational v1) abgeschlossen.")
 
