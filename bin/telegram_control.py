@@ -262,7 +262,7 @@ async def run_watchers():
                     curr = price_data.get("currency", "EUR")
                     
                     # Titel aus DB suchen
-                    title = await conn.fetchval("SELECT title FROM library WHERE ebay_item_id = $1", listing_id)
+                    title = await conn.fetchval("SELECT title FROM library WHERE ebay_item_id = $1", int(listing_id))
                     title_str = title[:35] + "..." if title and len(title) > 35 else (title or "Unbekannter Titel")
                     
                     msg += f"• {title_str}\n  └ `{listing_id}`: *{val} {curr}*\n"
