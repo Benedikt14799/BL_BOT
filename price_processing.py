@@ -119,8 +119,8 @@ class PriceProcessing:
             ek_total = ek + bl_shipping
             
             if token and base_url:
-                if ek_total <= Decimal('5.00'):
-                    logger.info(f"[{num}] Hybrid-Modus: EK+Versand ({ek_total}€) <= 5€. Überspringe eBay Konkurrenz-Check.")
+                if ek_total <= Decimal('8.00'):
+                    logger.info(f"[{num}] Hybrid-Modus: EK+Versand ({ek_total}€) <= 8€. Überspringe eBay Konkurrenz-Check.")
                 else:
                     if isbn:
                         comp_data = await PriceProcessing.get_competitor_prices(session, isbn, token, base_url, condition=bl_cond)
