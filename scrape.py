@@ -16,12 +16,21 @@ from database import DatabaseManager
 logger = logging.getLogger(__name__)
 number_pattern = re.compile(r"\d+")
 
-# REDUZIERT für Booklooker-Stabilität (vorher 15)
-semaphore = asyncio.Semaphore(3)
+# NOCH STÄRKER REDUZIERT für Booklooker-Stabilität
+semaphore = asyncio.Semaphore(2)
+
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:109.0) Gecko/20100101 Firefox/119.0"
+]
 
 # Basis-URL für relative Pfade
 BASE_URL = "https://www.booklooker.de"
 import os
+import random
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
@@ -37,10 +46,14 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
                 # Kleiner Jitter/Pause vor jedem Request
                 await asyncio.sleep(1.0) 
                 
-                async with session.get(url, timeout=30) as resp:
+                # Random User-Agent
+                headers = {"User-Agent": random.choice(USER_AGENTS)}
+                
+                async with session.get(url, headers=headers, timeout=30) as resp:
                     if resp.status == 503 or resp.status == 429:
-                        wait = 60 * (attempt + 1) # 1, 2, 3 Minuten Pause
-                        logger.warning(f"Booklooker Blockade ({resp.status}). Pausiere für {wait}s...")
+                        # Massive Pause bei Blockade (3-7 Minuten)
+                        wait = random.randint(180, 420) * (attempt + 1)
+                        logger.warning(f"Booklooker Blockade ({resp.status}). Erzwungene Pause für {wait}s...")
                         await asyncio.sleep(wait)
                         continue
                         

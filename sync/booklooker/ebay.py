@@ -72,8 +72,11 @@ async def fetch_bl_html(session: aiohttp.ClientSession, url: str) -> str:
                 logger.info(f"BL 410 (Gone): {url}")
                 return "410_GONE"
             if resp.status == 429:
-                logger.warning("Rate-Limit (429) von BookLooker! Warte 60 s …")
-                await asyncio.sleep(60)
+                # Progressive Pause: Wir erhöhen die Wartezeit bei jedem Block (simuliert über retry-counter oder globalen Status)
+                # Für den Moment machen wir eine deutlich längere, zufällige Pause (2-5 Minuten)
+                wait_time = random.randint(120, 300)
+                logger.warning(f"Rate-Limit (429) von BookLooker! Erzwungene 'menschliche' Pause für {wait_time}s …")
+                await asyncio.sleep(wait_time)
                 return ""
             logger.error(f"BL HTTP {resp.status} für {url}")
             return ""
