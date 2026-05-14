@@ -344,6 +344,15 @@ async def handle_update(update):
 
 async def main():
     logger.info("Telegram Control Bot gestartet...")
+    
+    # Sicherstellen, dass alle Tabellen existieren
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        await DatabaseManager.create_table(pool)
+        await pool.close()
+    except Exception as e:
+        logger.error(f"Fehler bei Initial-DB-Check: {e}")
+
     offset = 0
     url = f"https://api.telegram.org/bot{TOKEN}/getUpdates"
     async with aiohttp.ClientSession() as session:
