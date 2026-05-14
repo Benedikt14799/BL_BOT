@@ -83,7 +83,7 @@ class eBayNegotiation:
                     enriched.append(item)
         return enriched
 
-    async def send_offers_to_watchers(self, profit_share_percent=10):
+    async def send_offers_to_watchers(self, profit_share_percent=35):
         """
         Sendet Angebote basierend auf einem Anteil des tatsächlichen Gewinns.
         Beispiel: Gib 10% deines Gewinns als Rabatt weiter.

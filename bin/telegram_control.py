@@ -262,7 +262,7 @@ async def run_watchers():
             if len(items) > 15:
                 msg += f"\n... und {len(items)-15} weitere."
             
-            msg += f"\n\nNutze `/send_offers 10` um 10% deines Gewinns als Rabatt zu geben."
+            msg += f"\n\nNutze `/send_offers 35` um 35% deines Gewinns als Rabatt zu geben."
             await send_message_async(msg)
     except Exception as e:
         await send_message_async(f"❌ Fehler: {e}")
