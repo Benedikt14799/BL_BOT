@@ -288,7 +288,26 @@ async def handle_update(update):
 
     if text == "/start":
         res = await start_service()
-        await send_message_async(f"{res}\n\nBefehle:\n/status - Aktueller Stand\n/stop - Alles beenden\n/config - Einstellungen\n/upload - Manueller Upload")
+        msg = (f"{res}\n\n"
+               f"📋 *Alle Befehle:*\n"
+               f"━━━━━━━━━━━━\n"
+               f"📦 *Bestand & Sync:*\n"
+               f"• /status - Aktueller Datenbank-Stand\n"
+               f"• /blsync - Abgleich Booklooker ↔️ eBay\n"
+               f"• /ebaysync - eBay-Listen bereinigen\n"
+               f"• /urlaub - Urlaubs-Reaktivierung\n"
+               f"• /upload - Manueller eBay-Upload\n\n"
+               f"💰 *Sales & Controlling:*\n"
+               f"• /sales - Suche nach neuen Verkäufen\n"
+               f"• /report - Monatsbericht & Break-Even\n"
+               f"• /costs - Fixkosten verwalten\n\n"
+               f"👀 *Marketing:*\n"
+               f"• /watchers - Beobachter finden\n"
+               f"• /send_offers - Preisvorschläge senden\n\n"
+               f"⚙️ *System:*\n"
+               f"• /config - Einstellungen (Auto-Sync etc.)\n"
+               f"• /stop - Alle Prozesse beenden")
+        await send_message_async(msg)
     elif text == "/stop":
         res = await stop_service()
         await send_message_async(res)
