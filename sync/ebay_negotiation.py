@@ -155,7 +155,7 @@ class eBayNegotiation:
                             "listingId": listing_id,
                             "quantity": 1,
                             "price": {
-                                "value": f"{new_price:.2f}",
+                                "value": f"{new_price:.2f}".replace(".", ","),
                                 "currency": "EUR"
                             }
                         }
