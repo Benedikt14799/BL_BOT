@@ -662,7 +662,7 @@ async def process_library_links_async(db_pool):
                 FROM library 
                 WHERE (isbn IS NULL OR photo IS NULL OR photo = ''
                        OR start_price IS NULL OR start_price <= 0)
-                  AND (status_id IS NULL OR status_id IN (2, 7))
+                  AND (status_id IS NULL OR status_id = 7)
             """)
 
         total_to_process = len(rows)
