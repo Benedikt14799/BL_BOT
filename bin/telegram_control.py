@@ -252,24 +252,34 @@ async def run_watchers():
         if not items:
             await send_message_async("ℹ️ Aktuell keine Artikel für Preisvorschläge berechtigt.")
         else:
-            msg = f"👀 *Berechtigte Artikel ({len(items)}):*\n\n"
-            # Wir nutzen die bereits angereicherten Titel aus der DB
-            for item in items[:30]: # Max 30 anzeigen
+            # Wir nutzen die angereicherten Daten aus der DB
+            for item in items[:20]: # Max 20 für bessere Übersicht
                 listing_id = item.get('listingId')
-                price_data = item.get("display_price", {})
-                val = price_data.get("value", "0")
-                curr = price_data.get("currency", "EUR")
-                
                 db_info = item.get("db_data") or {}
-                title = db_info.get("title")
-                title_str = title[:35] + "..." if title and len(title) > 35 else (title or "Unbekannter Titel")
                 
-                msg += f"• {title_str}\n  └ `{listing_id}`: *{val} {curr}*\n"
+                title = db_info.get("title")
+                title_str = title[:40] + "..." if title and len(title) > 40 else (title or "Unbekannter Titel")
+                
+                # Werte aus DB holen (Fallback auf 0)
+                old_price = float(db_info.get("start_price") or 0)
+                profit_now = float(db_info.get("gewinn_real") or 0)
+                
+                if old_price > 0 and profit_now > 0:
+                    # Berechnung: 35% vom Gewinn als Rabatt
+                    discount_euro = profit_now * 0.35
+                    new_price = old_price - discount_euro
+                    remaining_profit = profit_now - discount_euro
+                    
+                    msg += f"📙 *{title_str}*\n"
+                    msg += f"  ├ Aktuell: `{old_price:.2f}€` (Gewinn: {profit_now:.2f}€)\n"
+                    msg += f"  └ *Angebot: {new_price:.2f}€* (Rest: *{remaining_profit:.2f}€*)\n\n"
+                else:
+                    msg += f"📙 *{title_str}*\n  └ `ID {listing_id}`: Preis/Gewinn-Daten unvollständig.\n\n"
             
-            if len(items) > 30:
-                msg += f"\n... und {len(items)-30} weitere."
+            if len(items) > 20:
+                msg += f"... und {len(items)-20} weitere berechtigte Artikel."
             
-            msg += f"\n\nNutze `/send_offers 35` um 35% deines Gewinns als Rabatt zu geben."
+            msg += f"\nNutze `/send_offers 35` um diese Angebote jetzt zu versenden."
             await send_message_async(msg)
     except Exception as e:
         await send_message_async(f"❌ Fehler: {e}")
