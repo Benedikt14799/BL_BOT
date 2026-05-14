@@ -123,6 +123,7 @@ class eBayNegotiation:
                 
                 # 2. Wie viel Rabatt (in €) entspricht X% des Gewinns?
                 rabatt_euro = gewinn_real * (Decimal(str(profit_share_percent)) / Decimal("100"))
+                new_price = current_p - rabatt_euro
                 
                 # 3. Welchem Prozentsatz vom Verkaufspreis entspricht das?
                 # Formel: (Rabatt_Euro / Verkaufspreis) * 100
@@ -137,7 +138,7 @@ class eBayNegotiation:
                     logger.info(f"Überspringe {listing_id}: {profit_share_percent}% vom Gewinn ({rabatt_euro:.2f}€) sind nur {discount_percent}% Rabatt. (eBay verlangt mind. 5%)")
                     continue
 
-                # 5. Angebot senden
+                # 5. Angebot senden (Wir senden den Preis direkt, das ist robuster als Prozente)
                 payload = {
                     "offers": [
                         {
@@ -147,7 +148,10 @@ class eBayNegotiation:
                             "offeredItems": [
                                 {
                                     "listingId": listing_id,
-                                    "discountPercentage": str(discount_percent)
+                                    "price": {
+                                        "value": f"{new_price:.2f}",
+                                        "currency": "EUR"
+                                    }
                                 }
                             ]
                         }
