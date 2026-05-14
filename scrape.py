@@ -647,9 +647,10 @@ async def process_library_links_async(db_pool):
             rows = await conn.fetch("""
                 SELECT id, LinkToBL, is_private 
                 FROM library 
-                WHERE (isbn IS NULL OR photo IS NULL OR photo = ''
-                       OR start_price IS NULL OR start_price <= 0)
-                  AND (status_id IS NULL OR status_id IN (2, 7))
+                WHERE (status_id IS NULL OR status_id = 7)
+                  AND (isbn IS NULL OR photo IS NULL OR photo = ''
+                       OR start_price IS NULL OR start_price <= 0
+                       OR last_competitor_check IS NULL)
             """)
 
         total_to_process = len(rows)
