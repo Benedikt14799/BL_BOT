@@ -16,8 +16,8 @@ from database import DatabaseManager
 logger = logging.getLogger(__name__)
 number_pattern = re.compile(r"\d+")
 
-# NOCH STÄRKER REDUZIERT für Booklooker-Stabilität
-semaphore = asyncio.Semaphore(2)
+# EXTREM REDUZIERT für Booklooker-Stabilität (Nur 1 Request gleichzeitig)
+semaphore = asyncio.Semaphore(1)
 GLOBAL_STOP_SCRAPE = False  # Globales Flag für IP-Sperren
 
 USER_AGENTS = [
@@ -36,7 +36,7 @@ import random
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
     GET-Request mit exponentiellem Backoff und Semaphor-Schutz.
-    Behandelt 503/429 und erkennt Captchas/IP-Sperren.
+    Behandelt 503/429 und erkennt Captchas/IP-Sperren mit verbesserten Headern.
     """
     global GLOBAL_STOP_SCRAPE
     max_retries = 3
@@ -51,16 +51,30 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
                 raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
 
             try:
-                # Dynamische Pause (1.5 - 3.5 Sekunden) für mehr "Menschlichkeit"
-                await asyncio.sleep(random.uniform(1.5, 3.5)) 
+                # Lange dynamische Pause (4.0 - 8.0 Sekunden) für maximale Sicherheit
+                await asyncio.sleep(random.uniform(4.0, 8.0)) 
                 
-                # Random User-Agent
-                headers = {"User-Agent": random.choice(USER_AGENTS)}
+                # Erweiterte Header für bessere Tarnung
+                ua = random.choice(USER_AGENTS)
+                headers = {
+                    "User-Agent": ua,
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+                    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Cache-Control": "max-age=0"
+                }
                 
                 async with session.get(url, headers=headers, timeout=30) as resp:
                     if resp.status == 503 or resp.status == 429:
-                        # Massive Pause bei Blockade (3-7 Minuten)
-                        wait = random.randint(180, 420) * (attempt + 1)
+                        # Massive Pause bei Blockade (5-10 Minuten)
+                        wait = random.randint(300, 600) * (attempt + 1)
                         logger.warning(f"Booklooker Blockade ({resp.status}). Erzwungene Pause für {wait}s...")
                         await asyncio.sleep(wait)
                         continue
@@ -468,9 +482,9 @@ async def find_backups_for_isbn(session, isbn, original_link, original_condition
     return backups
 
 # Konfiguration für Detailphase
-DETAIL_SEMAPHORE = asyncio.Semaphore(10)  # Von 50 auf 10 reduziert für Stabilität
+DETAIL_SEMAPHORE = asyncio.Semaphore(1)  # Maximale Drosselung auf 1
 MAX_RETRIES = 2
-BATCH_SIZE = 50  # Ebenfalls reduziert, um schneller auf Blöcke reagieren zu können
+BATCH_SIZE = 10  # Kleine Batches für schnellere Reaktion auf Sperren
 
 
 async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
