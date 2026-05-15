@@ -224,68 +224,85 @@ async def validate_backups(item: dict, session: aiohttp.ClientSession, cost_para
 
 async def try_fallback_rotation(item, session, cost_params, db_pool, token, base_url, worker_id) -> bool:
     """Schaltet auf B1 oder B2 um und aktualisiert die DB. Gibt True zurück, wenn Rotation erfolgreich."""
-    new_url = None
-    new_ek = None
-    new_shipping = None
-    new_is_private = False
-    b_type = ""
-    shift_sql = ""
     
+    # Liste der verfügbaren Backups erstellen
+    backups_to_try = []
     if item.get("backup1_url"):
-        new_url = item["backup1_url"]
-        new_ek = Decimal(str(item["backup1_price"] or 0))
-        new_shipping = Decimal(str(item["backup1_shipping"] or 0))
-        new_is_private = item.get("backup1_is_private", True)
-        b_type = "B1"
-        shift_sql = """
-            UPDATE library
-            SET linktobl = $1, purchase_price = $2, purchase_shipping = $3,
-                is_private = $4, start_price = $5, last_checked = NOW(),
-                backup1_url = backup2_url, backup1_price = backup2_price, 
-                backup1_shipping = backup2_shipping, backup1_is_private = backup2_is_private,
-                backup2_url = NULL, backup2_price = NULL, backup2_shipping = NULL, backup2_is_private = FALSE
-            WHERE id = $6
-        """
-    elif item.get("backup2_url"):
-        new_url = item["backup2_url"]
-        new_ek = Decimal(str(item["backup2_price"] or 0))
-        new_shipping = Decimal(str(item["backup2_shipping"] or 0))
-        new_is_private = item.get("backup2_is_private", False)
-        b_type = "B2"
-        shift_sql = """
-            UPDATE library
-            SET linktobl = $1, purchase_price = $2, purchase_shipping = $3,
-                is_private = $4, start_price = $5, last_checked = NOW(),
-                backup1_url = NULL, backup2_url = NULL
-            WHERE id = $6
-        """
+        backups_to_try.append({
+            "url": item["backup1_url"],
+            "ek": Decimal(str(item["backup1_price"] or 0)),
+            "ship": Decimal(str(item["backup1_shipping"] or 0)),
+            "is_priv": item.get("backup1_is_private", True),
+            "type": "B1"
+        })
+    if item.get("backup2_url"):
+        backups_to_try.append({
+            "url": item["backup2_url"],
+            "ek": Decimal(str(item["backup2_price"] or 0)),
+            "ship": Decimal(str(item["backup2_shipping"] or 0)),
+            "is_priv": item.get("backup2_is_private", False),
+            "type": "B2"
+        })
+
+    for b in backups_to_try:
+        new_url = b["url"]
         
-    if not new_url:
-        return False
-        
-    # Neues Target Price kalkulieren
-    target_ebay_price = PriceProcessing._compute_final_price(
-        new_ek, new_shipping, cost_params["addcost_low_mid"], cost_params["addcost_high"], 
-        cost_params["steuer_satz"], cost_params["fixed_costs"], cost_params["expected_sales"]
-    )
-    if not target_ebay_price: return False
-    
-    listing_id = item.get("ebay_listing_id")
-    sku = item["sku"]
-    
-    if listing_id:
-        success = await ebay_upload.revise_item_price_by_id(session, listing_id, float(target_ebay_price), token)
-    else:
-        success = await ebay_upload.update_inventory_price(session, sku, float(target_ebay_price), token, base_url, isbn=item.get('isbn'))
-        
-    if success:
-        logger.info(f"{worker_id} [FALLBACK {b_type}] Erfolgreiche Rotation zu {new_url} (Neuer eBay-Preis: {target_ebay_price}€)")
+        # Dubletten-Check: Existiert diese URL bereits für einen ANDEREN Artikel?
         async with db_pool.acquire() as conn:
-            await conn.execute(shift_sql, new_url, new_ek, new_shipping, new_is_private, target_ebay_price, item["id"])
-        return True
-    else:
-        logger.error(f"{worker_id} [FALLBACK {b_type}] eBay-Preisupdate fehlgeschlagen für Rotation!")
-        return False
+            existing_id = await conn.fetchval("SELECT id FROM library WHERE linktobl = $1 AND id != $2", new_url, item["id"])
+            if existing_id:
+                logger.warning(f"{worker_id} [FALLBACK {b['type']}] Dubletten-Gefahr: URL {new_url} bereits in DB bei ID {existing_id}. Überspringe.")
+                continue
+
+        # Neues Target Price kalkulieren
+        target_ebay_price = PriceProcessing._compute_final_price(
+            b["ek"], b["ship"], cost_params["addcost_low_mid"], cost_params["addcost_high"], 
+            cost_params["steuer_satz"], cost_params["fixed_costs"], cost_params["expected_sales"]
+        )
+        if not target_ebay_price: 
+            continue
+        
+        listing_id = item.get("ebay_listing_id")
+        sku = item["sku"]
+        
+        # eBay Preis-Update
+        if listing_id:
+            success = await ebay_upload.revise_item_price_by_id(session, listing_id, float(target_ebay_price), token)
+        else:
+            success = await ebay_upload.update_inventory_price(session, sku, float(target_ebay_price), token, base_url, isbn=item.get('isbn'))
+            
+        if success:
+            logger.info(f"{worker_id} [FALLBACK {b['type']}] Erfolgreiche Rotation zu {new_url} (Neuer eBay-Preis: {target_ebay_price}€)")
+            
+            # Datenbank-Update je nach Backup-Typ
+            if b["type"] == "B1":
+                shift_sql = """
+                    UPDATE library
+                    SET linktobl = $1, purchase_price = $2, purchase_shipping = $3,
+                        is_private = $4, start_price = $5, last_checked = NOW(),
+                        backup1_url = backup2_url, backup1_price = backup2_price, 
+                        backup1_shipping = backup2_shipping, backup1_is_private = backup2_is_private,
+                        backup2_url = NULL, backup2_price = NULL, backup2_shipping = NULL, backup2_is_private = FALSE
+                    WHERE id = $6
+                """
+            else: # B2
+                shift_sql = """
+                    UPDATE library
+                    SET linktobl = $1, purchase_price = $2, purchase_shipping = $3,
+                        is_private = $4, start_price = $5, last_checked = NOW(),
+                        backup1_url = NULL, backup2_url = NULL
+                    WHERE id = $6
+                """
+                
+            async with db_pool.acquire() as conn:
+                await conn.execute(shift_sql, new_url, b["ek"], b["ship"], b["is_priv"], target_ebay_price, item["id"])
+            return True
+        else:
+            logger.error(f"{worker_id} [FALLBACK {b['type']}] eBay-Preisupdate fehlgeschlagen für Rotation!")
+            # Versuche nächstes Backup, falls vorhanden
+            continue
+            
+    return False
 
 # ─── Kern-Logik: Ein einzelnes Item verarbeiten ───────────────────
 

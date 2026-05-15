@@ -18,6 +18,7 @@ number_pattern = re.compile(r"\d+")
 
 # NOCH STÄRKER REDUZIERT für Booklooker-Stabilität
 semaphore = asyncio.Semaphore(2)
+GLOBAL_STOP_SCRAPE = False  # Globales Flag für IP-Sperren
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -35,16 +36,23 @@ import random
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
     GET-Request mit exponentiellem Backoff und Semaphor-Schutz.
-    Behandelt 503/429 mit längeren Pausen.
+    Behandelt 503/429 und erkennt Captchas/IP-Sperren.
     """
+    global GLOBAL_STOP_SCRAPE
     max_retries = 3
     base_delay = 2
     
+    if GLOBAL_STOP_SCRAPE:
+        raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
+
     async with semaphore:
         for attempt in range(max_retries + 1):
+            if GLOBAL_STOP_SCRAPE:
+                raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
+
             try:
-                # Kleiner Jitter/Pause vor jedem Request
-                await asyncio.sleep(1.0) 
+                # Dynamische Pause (1.5 - 3.5 Sekunden) für mehr "Menschlichkeit"
+                await asyncio.sleep(random.uniform(1.5, 3.5)) 
                 
                 # Random User-Agent
                 headers = {"User-Agent": random.choice(USER_AGENTS)}
@@ -56,10 +64,21 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
                         logger.warning(f"Booklooker Blockade ({resp.status}). Erzwungene Pause für {wait}s...")
                         await asyncio.sleep(wait)
                         continue
+                    
+                    content = await resp.text()
+                    
+                    # --- 🛑 IP-BLOCK ERKENNUNG ---
+                    if "wurde geblockt" in content or "automatisierte maschinelle Zugriff" in content or "solveCaptcha" in content:
+                        logger.critical(f"🛑 IP-SPERRE ERKANNT! Booklooker hat den Zugriff verweigert. URL: {url}")
+                        GLOBAL_STOP_SCRAPE = True
+                        raise Exception("IP_BLOCKED_BY_BOOKLOOKER")
                         
                     resp.raise_for_status()
-                    return await resp.text()
+                    return content
             except Exception as e:
+                if "IP_BLOCKED_BY_BOOKLOOKER" in str(e) or "SCRAPE_STOPPED_DUE_TO_BLOCK" in str(e):
+                    raise e
+
                 if attempt == max_retries:
                     logger.error(f"Alle {max_retries} Retries für {url} fehlgeschlagen: {e}")
                     raise e
@@ -449,9 +468,9 @@ async def find_backups_for_isbn(session, isbn, original_link, original_condition
     return backups
 
 # Konfiguration für Detailphase
-DETAIL_SEMAPHORE = asyncio.Semaphore(50)  # behutsame Parallelität (Serverfreundlich anpassen)
+DETAIL_SEMAPHORE = asyncio.Semaphore(10)  # Von 50 auf 10 reduziert für Stabilität
 MAX_RETRIES = 2
-BATCH_SIZE = 200  # für gather in Blöcken
+BATCH_SIZE = 50  # Ebenfalls reduziert, um schneller auf Blöcke reagieren zu können
 
 
 async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
