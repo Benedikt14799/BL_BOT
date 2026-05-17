@@ -77,19 +77,25 @@ async def get_rate_limit_status(session: aiohttp.ClientSession) -> dict:
 def parse_rate_limit_response(data: dict) -> dict:
     """
     Extrahiert die relevanten API-Limits. Sichert sowohl das Limit für Uploads (Sell)
-    als auch für den Konkurrenzcheck (Buy).
+    als auch für den Konkurrenzcheck (Buy) unter Anwendung der echten Limits
+    (5.000 für Buy/Scraping und 2.000.000 für Sell/Uploads).
     """
     result = {
-        "sell": {"limit": 0, "remaining": 0, "used": 0, "reset": "Unbekannt"},
-        "buy": {"limit": 0, "remaining": 0, "used": 0, "reset": "Unbekannt"}
+        "sell": {"limit": 2000000, "remaining": 2000000, "used": 0, "reset": "Unbekannt"},
+        "buy": {"limit": 5000, "remaining": 5000, "used": 0, "reset": "Unbekannt"}
     }
     
     try:
+        from datetime import timedelta
         buy_target = "buy.browse"
         sell_target = "sell.inventory"
         sell_fallback = "AddFixedPriceItem"
         
         sell_found = False
+        
+        # Temp-Diktate für API-Werte
+        api_buy = {"limit": 0, "remaining": 0}
+        api_sell = {"limit": 0, "remaining": 0}
         
         for context in data.get("rateLimits", []):
             for resource in context.get("resources", []):
@@ -98,33 +104,50 @@ def parse_rate_limit_response(data: dict) -> dict:
                 for rate in resource.get("rates", []):
                     limit = rate.get("limit", 0)
                     if limit > 0:
-                        parsed_rate = {
+                        parsed = {
                             "limit": limit,
-                            "remaining": rate.get("remaining", 0),
-                            "used": limit - rate.get("remaining", 0),
-                            "reset": rate.get("reset")
+                            "remaining": rate.get("remaining", 0)
                         }
                         
-                        reset_str = parsed_rate["reset"]
-                        if reset_str:
-                            try:
-                                dt = datetime.fromisoformat(reset_str.replace("Z", "+00:00"))
-                                parsed_rate["reset"] = dt.strftime("%d.%m.%Y, %H:%M Uhr UTC")
-                            except:
-                                parsed_rate["reset"] = reset_str
-                                
                         # Buy/Browse API (Konkurrenzcheck)
                         if res_name == buy_target:
-                            result["buy"] = parsed_rate
+                            api_buy = parsed
                             
                         # Sell/Inventory API (Uploads)
                         if res_name == sell_target:
-                            result["sell"] = parsed_rate
+                            api_sell = parsed
                             sell_found = True
                             
-                        # Fallback für Uploads, falls sell.inventory fehlt
+                        # Fallback für Uploads
                         if res_name == sell_fallback and not sell_found:
-                            result["sell"] = parsed_rate
+                            api_sell = parsed
+
+        # Echten Verbrauch berechnen (API Limit - API Remaining)
+        used_buy = max(0, api_buy["limit"] - api_buy["remaining"]) if api_buy["limit"] > 0 else 0
+        used_sell = max(0, api_sell["limit"] - api_sell["remaining"]) if api_sell["limit"] > 0 else 0
+        
+        # Nächsten Reset-Zeitpunkt berechnen (täglich um 02:00 Uhr Berlin Ortszeit / 00:00 Uhr UTC)
+        now_local = datetime.now()
+        reset_today = now_local.replace(hour=2, minute=0, second=0, microsecond=0)
+        if now_local >= reset_today:
+            reset_dt = reset_today + timedelta(days=1)
+        else:
+            reset_dt = reset_today
+        reset_str = reset_dt.strftime("%d.%m.%Y, %H:%M Uhr")
+        
+        result["buy"] = {
+            "limit": 5000,
+            "used": used_buy,
+            "remaining": max(0, 5000 - used_buy),
+            "reset": reset_str
+        }
+        
+        result["sell"] = {
+            "limit": 2000000,
+            "used": used_sell,
+            "remaining": max(0, 2000000 - used_sell),
+            "reset": reset_str
+        }
 
         return result
     except Exception as e:
