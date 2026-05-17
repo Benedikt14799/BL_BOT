@@ -63,25 +63,37 @@ async def send_message_async(text):
 # --- Process Management ---
 
 def is_service_running():
-    if os.path.exists(PID_FILE):
-        try:
-            with open(PID_FILE, "r") as f:
-                pid = int(f.read().strip())
-            
-            if os.name == 'nt':
-                # Windows Check
+    if os.name == 'nt':
+        # Windows Check
+        if os.path.exists(PID_FILE):
+            try:
+                with open(PID_FILE, "r") as f:
+                    pid = int(f.read().strip())
                 output = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True).decode()
                 return str(pid) in output
-            else:
-                # Linux/Unix Check
-                try:
-                    os.kill(pid, 0)
-                    return True
-                except OSError:
-                    return False
+            except:
+                return False
+        return False
+    else:
+        # Linux Check
+        # 1. Erst systemd Service prüfen (blbot)
+        try:
+            res = subprocess.run(["systemctl", "is-active", "--quiet", "blbot"])
+            if res.returncode == 0:
+                return True
         except:
-            return False
-    return False
+            pass
+        
+        # 2. Fallback auf PID-Datei
+        if os.path.exists(PID_FILE):
+            try:
+                with open(PID_FILE, "r") as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                return False
+        return False
 
 async def start_service():
     if is_service_running():
