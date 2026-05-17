@@ -65,6 +65,14 @@ async def run_status_report():
     db_url = os.getenv("DATABASE_URL")
     pool = await DatabaseManager.create_pool(db_url)
     try:
+        # DB-Statistiken laden
+        stats = {}
+        async with pool.acquire() as conn:
+            stats["pipeline"] = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 7")
+            stats["ready"] = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 1 AND (ebay_listed = FALSE OR ebay_listed IS NULL)")
+            stats["listed"] = await conn.fetchval("SELECT COUNT(*) FROM library WHERE ebay_listed = TRUE OR status_id = 4")
+            stats["filtered"] = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 2")
+
         # Proxy Daten holen
         from proxy_manager import ProxyManager
         pm = ProxyManager(pool)
