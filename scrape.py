@@ -850,12 +850,28 @@ async def process_library_links_async(db_pool):
                             )
                     except Exception as e_db:
                         db_stats = f"⚠️ DB-Stats Fehler: {e_db}"
+                        
+                    ebay_stats = ""
+                    try:
+                        from ebay_analytics import get_rate_limit_status
+                        rate_limits = await get_rate_limit_status(session)
+                        buy = rate_limits.get("buy", {})
+                        sell = rate_limits.get("sell", {})
+                        ebay_stats = (
+                            f"🔑 *eBay API-Kontingent:*\n"
+                            f"🛒 Buy (Konkurrenz): `{buy.get('remaining', 0)}` / `{buy.get('limit', 0)}` übrig\n"
+                            f"🚀 Sell (Uploads): `{sell.get('remaining', 0)}` / `{sell.get('limit', 0)}` übrig\n"
+                            f"🔄 Reset: {buy.get('reset', 'Unbekannt')}"
+                        )
+                    except Exception as e_ebay:
+                        ebay_stats = f"⚠️ eBay-Quota Fehler: {e_ebay}"
                     
                     report_msg = (
                         f"⏰ *Stündlicher Scraper Report* (Laufzeit: {elapsed_hours}h {elapsed_mins}m)\n\n"
                         f"📈 *Fortschritt:* `{processed}` / `{total_to_process}` ({(processed/total_to_process)*100:.1f}%)\n"
                         f"📚 *In dieser Stunde:* ok={hourly_ok}, filtered={hourly_filtered}, errors={hourly_errors}\n"
                         f"🏆 *Gesamt (Session):* ok={total_ok}, filtered={total_filtered}, errors={total_errors}\n\n"
+                        f"{ebay_stats}\n\n"
                         f"{db_stats}"
                     )
                     await send_telegram_alert(report_msg)
