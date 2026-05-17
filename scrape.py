@@ -40,6 +40,25 @@ BASE_URL = "https://www.booklooker.de"
 import os
 import random
 
+async def send_telegram_alert(message: str):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"Telegram Alert Fehler: {resp.status}")
+    except Exception as e:
+        logger.error(f"Telegram Alert Exception: {e}")
+
 async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: ProxyManager = None) -> str:
     """
     GET-Request mit Proxy-Unterstützung, Kosten-Tracking und Semaphor-Schutz.
@@ -91,6 +110,11 @@ async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: Pr
                     if resp.status == 503 or resp.status == 429:
                         wait = random.randint(300, 600) * (attempt + 1)
                         logger.warning(f"Blockade ({resp.status}). Pause für {wait}s...")
+                        
+                        # Telegram Alert senden
+                        msg = f"⚠️ *Booklooker Blockade ({resp.status})*\nDer Scraper wurde ausgebremst bei:\n`{url}`\n\nPause für *{wait}s*..."
+                        await send_telegram_alert(msg)
+                        
                         await asyncio.sleep(wait)
                         continue
                     
@@ -102,11 +126,21 @@ async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: Pr
                         budget_ok = await proxy_manager.track_request(bytes_total)
                         if not budget_ok:
                             GLOBAL_STOP_SCRAPE = True
+                            
+                            # Telegram Alert senden
+                            msg = "🚨 *BUDGET-ALARM!*\nDas tägliche Proxy-Budget wurde erreicht. Der Scraper wird pausiert!"
+                            await send_telegram_alert(msg)
+                            
                             raise Exception("PROXY_BUDGET_EXCEEDED")
 
                     if "wurde geblockt" in content or "solveCaptcha" in content:
                         logger.critical(f"🛑 IP-SPERRE ERKANNT! URL: {url}")
                         GLOBAL_STOP_SCRAPE = True
+                        
+                        # Telegram Alert senden
+                        msg = f"🚨 *IP-SPERRE ERKANNT!*\nBooklooker hat uns blockiert oder ein Captcha geschaltet.\nDer Scraper wurde *gestoppt*! 🛑"
+                        await send_telegram_alert(msg)
+                        
                         raise Exception("IP_BLOCKED_BY_BOOKLOOKER")
                         
                     resp.raise_for_status()
@@ -738,6 +772,14 @@ async def process_library_links_async(db_pool):
         total_errors = 0
         processed = 0
         
+        # NEU: Telegram-Stunden-Report Tracking
+        import time
+        start_time = time.time()
+        last_update_time = time.time()
+        hourly_ok = 0
+        hourly_filtered = 0
+        hourly_errors = 0
+        
         pm = ProxyManager(db_pool)
         async with aiohttp.ClientSession() as session:
             from ebay_analytics import has_sufficient_quota
@@ -767,8 +809,51 @@ async def process_library_links_async(db_pool):
                 total_filtered += num_filtered
                 total_errors += errors
                 
+                # Stündliche Zähler erhöhen
+                hourly_ok += ok
+                hourly_filtered += num_filtered
+                hourly_errors += errors
+                
                 processed += len(batch)
                 logger.info(f"Progress: {processed}/{total_to_process} (ok={ok}, gefiltert={num_filtered}, errors={errors})")
+
+                # Überprüfen, ob eine Stunde (3600 Sekunden) vergangen ist
+                now = time.time()
+                if now - last_update_time >= 3600:
+                    last_update_time = now
+                    elapsed_hours = int((now - start_time) / 3600)
+                    elapsed_mins = int(((now - start_time) % 3600) / 60)
+                    
+                    db_stats = ""
+                    try:
+                        async with db_pool.acquire() as conn:
+                            pending = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 7")
+                            active = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 1")
+                            filtered_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 2")
+                            unprofitable_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 3")
+                            db_stats = (
+                                f"📊 *Live DB-Verteilung:*\n"
+                                f"⏳ Pending: `{pending}`\n"
+                                f"✅ Active: `{active}`\n"
+                                f"🛡️ Filtered: `{filtered_db}`\n"
+                                f"💸 Unprofitable: `{unprofitable_db}`"
+                            )
+                    except Exception as e_db:
+                        db_stats = f"⚠️ DB-Stats Fehler: {e_db}"
+                    
+                    report_msg = (
+                        f"⏰ *Stündlicher Scraper Report* (Laufzeit: {elapsed_hours}h {elapsed_mins}m)\n\n"
+                        f"📈 *Fortschritt:* `{processed}` / `{total_to_process}` ({(processed/total_to_process)*100:.1f}%)\n"
+                        f"📚 *In dieser Stunde:* ok={hourly_ok}, filtered={hourly_filtered}, errors={hourly_errors}\n"
+                        f"🏆 *Gesamt (Session):* ok={total_ok}, filtered={total_filtered}, errors={total_errors}\n\n"
+                        f"{db_stats}"
+                    )
+                    await send_telegram_alert(report_msg)
+                    
+                    # Stündliche Counter zurücksetzen
+                    hourly_ok = 0
+                    hourly_filtered = 0
+                    hourly_errors = 0
 
         return {"ok": total_ok, "filtered": total_filtered, "errors": total_errors}
 
