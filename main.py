@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from database import DatabaseManager
 import scrape
 import ebay_upload
+from proxy_manager import ProxyManager
 
 # Logging konfigurieren
 logging.basicConfig(level=logging.INFO)
@@ -64,7 +65,8 @@ async def main():
         if not links_to_scrape:
             logger.info("Es wurden keine neuen Links zum Scrapen übergeben (links.txt ist leer oder fehlt). Alte Einträge werden im nächsten Schritt verarbeitet.")
 
-        await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool)
+        pm = ProxyManager(db_pool)
+        await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool, pm)
         await scrape.scrape_and_save_pages(db_pool)
         results = await scrape.perform_webscrape_async(db_pool)
         

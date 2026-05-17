@@ -289,12 +289,17 @@ async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool, pr
     if not links_to_fetch:
         return
 
-    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links...")
+    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links (seriell)...")
+    results = []
     async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(
-            *(fetch_and_process(session, l, proxy_manager) for l in links_to_fetch),
-            return_exceptions=True
-        )
+        for idx, l in enumerate(links_to_fetch):
+            try:
+                res = await fetch_and_process(session, l, proxy_manager)
+                results.append(res)
+                # Kurze Pause für maximale Stabilität und IP-Wechsel
+                await asyncio.sleep(random.uniform(4.0, 8.0))
+            except Exception as e:
+                logger.error(f"Fehler beim Holen der Metadaten für {l}: {e}")
 
     insert_data = [r for r in results if isinstance(r, tuple)]
     if insert_data:
