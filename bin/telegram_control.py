@@ -364,13 +364,13 @@ async def handle_update(update):
         cfg = load_config()
         s = "✅ AN" if cfg.get("auto_sync") else "❌ AUS"
         sc = "✅ AN" if cfg.get("auto_scrape") else "❌ AUS"
-        await send_message_async(f"⚙️ *Konfiguration:*\n\n• Auto-Sync: {s} (/toggle_sync)\n• Auto-Scrape: {sc} (/toggle_scrape)\n\n_Sync: 03:00 Uhr | Scrape: 10:00 Uhr_")
-    elif text == "/toggle_sync":
+        await send_message_async(f"⚙️ *Konfiguration:*\n\n• Auto-Sync: {s} (/toggle\\_sync)\n• Auto-Scrape: {sc} (/toggle\\_scrape)\n\n_Sync: 03:00 Uhr | Scrape: 10:00 Uhr_")
+    elif text in ["/toggle_sync", "/togglesync"]:
         cfg = load_config()
         cfg["auto_sync"] = not cfg.get("auto_sync", True)
         save_config(cfg)
         await send_message_async(f"Sync ist jetzt {'AN' if cfg['auto_sync'] else 'AUS'}.")
-    elif text == "/toggle_scrape":
+    elif text in ["/toggle_scrape", "/togglescrape"]:
         cfg = load_config()
         cfg["auto_scrape"] = not cfg.get("auto_scrape", True)
         save_config(cfg)
@@ -454,7 +454,7 @@ async def handle_update(update):
             await send_message_async(f"❌ Fehler: {e}")
     elif text == "/watchers":
         asyncio.create_task(run_watchers())
-    elif text.startswith("/send_offers"):
+    elif text.startswith(("/send_offers", "/sendoffers")):
         try:
             parts = text.split()
             percent = 5 # Default
