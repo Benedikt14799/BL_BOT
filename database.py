@@ -327,7 +327,7 @@ class DatabaseManager:
         except Exception as e:
             logger.error(f"Fehler beim Erstellen der Trigger: {e}")
 
-        # --- Controlling Tabellen (Neu) ---
+        # --- Controlling & Proxy Tabellen (Neu) ---
         try:
             # Kostentabelle für Aufschlüsselung
             await conn.execute("""
@@ -335,6 +335,28 @@ class DatabaseManager:
                     id SERIAL PRIMARY KEY,
                     label VARCHAR(255) NOT NULL,
                     amount NUMERIC(10, 2) NOT NULL,
+                    created_at TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            
+            # NEU: Proxy-Verbrauch Tabelle
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS proxy_usage (
+                    id SERIAL PRIMARY KEY,
+                    usage_date DATE DEFAULT CURRENT_DATE UNIQUE,
+                    bytes_transferred BIGINT DEFAULT 0,
+                    cost_eur NUMERIC(10, 4) DEFAULT 0,
+                    request_count INTEGER DEFAULT 0
+                );
+            """)
+
+            # NEU: Händler Blacklist / Urlaubsliste
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS seller_blacklist (
+                    id SERIAL PRIMARY KEY,
+                    seller_name VARCHAR(255) UNIQUE NOT NULL,
+                    reason TEXT,
+                    vacation_until DATE,
                     created_at TIMESTAMP DEFAULT NOW()
                 );
             """)
@@ -347,7 +369,7 @@ class DatabaseManager:
                     value TEXT
                 );
             """)
-            logger.info("Controlling-Tabellen initialisiert.")
+            logger.info("Controlling- und Proxy-Tabellen initialisiert.")
         except Exception as e:
             logger.error(f"Fehler bei Controlling-Initialisierung: {e}")
 

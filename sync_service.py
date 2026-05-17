@@ -12,6 +12,7 @@ from sync.booklooker.reactivate_vacation import main as reactivate_vacation_main
 from sync import ebay_inventory_check
 from sync.ebay_orders import process_orders, generate_daily_report
 from database import DatabaseManager
+from proxy_manager import ProxyManager
 import scrape
 
 load_dotenv()
@@ -64,13 +65,22 @@ async def run_status_report():
     db_url = os.getenv("DATABASE_URL")
     pool = await DatabaseManager.create_pool(db_url)
     try:
-        stats = await DatabaseManager.get_library_stats(pool)
+        # Proxy Daten holen
+        from proxy_manager import ProxyManager
+        pm = ProxyManager(pool)
+        proxy = await pm.get_current_usage()
+        mb = proxy["bytes"] / (1024*1024)
+        cost = float(proxy["cost"])
+        
         msg = (
             "📊 *Automatischer System-Status*\n\n"
             f"📥 *Pipeline (Wartend):* {stats['pipeline']:,}\n"
             f"✅ *Bereit für eBay:* {stats['ready']:,}\n"
             f"📦 *Auf eBay gelistet:* {stats['listed']:,}\n"
             f"🗑️ *Aussortiert/Gefiltert:* {stats['filtered']:,}\n\n"
+            f"🌐 *Proxy-Verbrauch heute:*\n"
+            f"📦 {mb:.1f} MB | 💸 {cost:.2f} €\n"
+            f"🔢 {proxy['requests']} Requests\n\n"
             "_Dienst läuft planmäßig._"
         ).replace(",", ".")
         await send_telegram_report(msg)
@@ -138,6 +148,7 @@ async def service_loop():
     last_scrape_day = None
     last_report_time = None # Speichert "YYYY-MM-DD HH:MM"
     last_order_sync_time = None
+    proxy_alert_sent = False
 
     while True:
         try:
@@ -193,6 +204,19 @@ async def service_loop():
                 for note in notifications:
                     await send_telegram_report(note)
                 last_order_sync_time = day_hour_str
+            
+            # 5. Check Proxy Budget Alert
+            db_url = os.getenv("DATABASE_URL")
+            pool = await DatabaseManager.create_pool(db_url)
+            try:
+                pm = ProxyManager(pool)
+                if not pm.is_budget_ok() and not proxy_alert_sent:
+                    await send_telegram_report("🛑 *BUDGET-ALARM*\nDas tägliche Proxy-Budget wurde erreicht. Der Bot hat den Scraper pausiert!")
+                    proxy_alert_sent = True
+                elif pm.is_budget_ok():
+                    proxy_alert_sent = False
+            finally:
+                await pool.close()
 
             await asyncio.sleep(30) # Alle 30 Sek prüfen für präzise Reports
             

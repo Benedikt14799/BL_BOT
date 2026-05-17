@@ -53,35 +53,22 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64; rv:122.0) Gecko/20100101 Firefox/122.0",
 ]
 
-# Delay zwischen Requests (Sekunden) – schont BookLooker
+# Delay zwischen Requests (Sekunden) – schont BookLooker (wird nur ohne Proxy genutzt)
 BASE_DELAY = 8.0
 JITTER = 0.3  # ±30 %
 STOP_FLAG = os.path.join(PROJECT_ROOT, "stop_sync.flag")
 
+from scrape import fetch_html
+from proxy_manager import ProxyManager
 
-async def fetch_bl_html(session: aiohttp.ClientSession, url: str) -> str:
-    """Holt HTML von BookLooker mit randomisiertem User-Agent."""
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
+
+async def fetch_bl_html(session: aiohttp.ClientSession, url: str, proxy_manager: ProxyManager = None) -> str:
+    """Delegiert an zentrale fetch_html mit Proxy-Unterstützung."""
     try:
-        async with session.get(url, headers=headers, timeout=15) as resp:
-            if resp.status == 200:
-                return await resp.text()
-            if resp.status == 404:
-                logger.info(f"BL 404 (Not Found): {url}")
-                return "404_NOT_FOUND"
-            if resp.status == 410:
-                logger.info(f"BL 410 (Gone): {url}")
-                return "410_GONE"
-            if resp.status == 429:
-                # Progressive Pause: Wir erhöhen die Wartezeit bei jedem Block (simuliert über retry-counter oder globalen Status)
-                # Für den Moment machen wir eine deutlich längere, zufällige Pause (2-5 Minuten)
-                wait_time = random.randint(120, 300)
-                logger.warning(f"Rate-Limit (429) von BookLooker! Erzwungene 'menschliche' Pause für {wait_time}s …")
-                await asyncio.sleep(wait_time)
-                return ""
-            logger.error(f"BL HTTP {resp.status} für {url}")
-            return ""
+        return await fetch_html(session, url, proxy_manager)
     except Exception as e:
+        if "404" in str(e): return "404_NOT_FOUND"
+        if "410" in str(e): return "410_GONE"
         logger.error(f"Fehler beim Abruf von {url}: {e}")
         return ""
 
@@ -145,7 +132,9 @@ async def validate_backups(item: dict, session: aiohttp.ClientSession, cost_para
     ]:
         if not b_url: continue
         
-        html = await fetch_bl_html(session, b_url)
+        # Proxy-Manager durchreichen, falls vorhanden (via cost_params oder globales Objekt)
+        pm = cost_params.get("proxy_manager")
+        html = await fetch_bl_html(session, b_url, pm)
         if not html:
             # Netzwerk-Fehler ignorieren
             if is_b1: valid_b1 = True
@@ -349,7 +338,9 @@ async def process_item(
                 await DatabaseManager.record_sold_listing(db_pool, internal_id, bl_url, sku, title, "no_valid_backup")
             return {"action": "no_backup_ended", "id": internal_id}
 
-    html = await fetch_bl_html(session, bl_url)
+    # Proxy-Manager durchreichen
+    pm = cost_params.get("proxy_manager")
+    html = await fetch_bl_html(session, bl_url, pm)
     if not html:
         # Netzwerkfehler – nicht handeln, beim nächsten Lauf erneut prüfen
         await _update_last_checked(db_pool, internal_id)
@@ -376,7 +367,7 @@ async def process_item(
         
         for attempt in range(2):
             await asyncio.sleep(3)  # Kurze Pause für Server-Stabilität
-            retry_html = await fetch_bl_html(session, bl_url)
+            retry_html = await fetch_bl_html(session, bl_url, pm)
             
             # Bei 410/404 während Retry: Preis-Parsing überspringen für saubere Logs
             if retry_html in ["404_NOT_FOUND", "410_GONE"]:
@@ -673,6 +664,10 @@ async def run_sync(pool):
     cost_params = _get_cost_params()
     EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
     MAX_WORKERS = int(os.getenv("MAX_SYNC_WORKERS", "5"))
+
+    # ProxyManager initialisieren
+    pm = ProxyManager(pool)
+    cost_params["proxy_manager"] = pm
 
     async with aiohttp.ClientSession() as session:
         # Alle gelisteten Artikel laden

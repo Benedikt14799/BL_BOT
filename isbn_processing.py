@@ -20,12 +20,24 @@ async def process_entry(
     session: aiohttp.ClientSession,
     link: str,
     num: int,
-    db_pool
+    db_pool,
+    proxy_manager=None
 ) -> Tuple[bool, Optional[str], Optional[BeautifulSoup], Optional[Dict]]:
     from scrape import fetch_html, extract_properties
 
     try:
-        html_content = await fetch_html(session, link)
+        html_content = await fetch_html(session, link, proxy_manager)
+        
+        # --- 🕵️ SOLD/GONE CHECK ---
+        if html_content == "SOLD_BY_STATUS" or "Artikeldaten nicht gefunden" in html_content or "bereits verkauft" in html_content:
+            logger.warning(f"Artikel {num} bereits verkauft oder entfernt. Bereinige Datenbank.")
+            # In sold_listings verschieben (via DatabaseManager)
+            try:
+                await DatabaseManager.record_sold_listing(db_pool, num, link, "UNKNOWN", "SOLD_OR_REMOVED", "Auto-Cleanup")
+            except Exception as e:
+                logger.error(f"Fehler beim Verschieben von {num} nach sold_listings: {e}")
+            return False, "SOLD", None, None
+
         soup = BeautifulSoup(html_content, "lxml")
 
         props = extract_properties(soup)

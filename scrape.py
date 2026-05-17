@@ -5,6 +5,12 @@ import asyncio
 import aiohttp
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qsl, parse_qs, urlencode, urlunparse, urljoin
+import random
+import re
+import logging
+from typing import List, Dict, Optional
+from datetime import datetime
+from proxy_manager import ProxyManager
 
 import bl_processing
 import database
@@ -16,8 +22,9 @@ from database import DatabaseManager
 logger = logging.getLogger(__name__)
 number_pattern = re.compile(r"\d+")
 
-# EXTREM REDUZIERT für Booklooker-Stabilität (Nur 1 Request gleichzeitig)
-semaphore = asyncio.Semaphore(1)
+# Optimiert für maximale Stabilität (3 Worker, höhere Delays)
+semaphore = asyncio.Semaphore(3)
+DETAIL_SEMAPHORE = asyncio.Semaphore(3)
 GLOBAL_STOP_SCRAPE = False  # Globales Flag für IP-Sperren
 
 USER_AGENTS = [
@@ -33,10 +40,9 @@ BASE_URL = "https://www.booklooker.de"
 import os
 import random
 
-async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
+async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: ProxyManager = None) -> str:
     """
-    GET-Request mit exponentiellem Backoff und Semaphor-Schutz.
-    Behandelt 503/429 und erkennt Captchas/IP-Sperren mit verbesserten Headern.
+    GET-Request mit Proxy-Unterstützung, Kosten-Tracking und Semaphor-Schutz.
     """
     global GLOBAL_STOP_SCRAPE
     max_retries = 3
@@ -45,59 +51,73 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     if GLOBAL_STOP_SCRAPE:
         raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
 
+    # Proxy-Logik abfragen
+    proxy_args = {}
+    if proxy_manager:
+        try:
+            proxy_args = await proxy_manager.get_proxy_args(url)
+        except Exception as e:
+            logger.error(f"Proxy-Konfigurationsfehler: {e}")
+            if getattr(proxy_manager, 'kill_switch', True):
+                GLOBAL_STOP_SCRAPE = True
+                raise e
+
     async with semaphore:
         for attempt in range(max_retries + 1):
             if GLOBAL_STOP_SCRAPE:
                 raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
 
             try:
-                # Lange dynamische Pause (4.0 - 8.0 Sekunden) für maximale Sicherheit
-                await asyncio.sleep(random.uniform(4.0, 8.0)) 
+                # Grundschutz gegen "Bursting" (auch mit Proxy)
+                if not proxy_args.get("proxy"):
+                    await asyncio.sleep(random.uniform(4.0, 8.0)) 
+                else:
+                    # Deutlich erhöhter Puffer, um 429er bei Booklooker zu vermeiden
+                    await asyncio.sleep(random.uniform(4.0, 8.0))
                 
-                # Erweiterte Header für bessere Tarnung
                 ua = random.choice(USER_AGENTS)
                 headers = {
                     "User-Agent": ua,
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
                     "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "DNT": "1",
                     "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "none",
-                    "Sec-Fetch-User": "?1",
-                    "Cache-Control": "max-age=0"
                 }
                 
-                async with session.get(url, headers=headers, timeout=30) as resp:
+                async with session.get(url, headers=headers, timeout=30, **proxy_args) as resp:
+                    if resp.status == 410:
+                        logger.warning(f"Status 410: Artikel {url} ist endgültig weg (Gone).")
+                        return "SOLD_BY_STATUS"
+
                     if resp.status == 503 or resp.status == 429:
-                        # Massive Pause bei Blockade (5-10 Minuten)
                         wait = random.randint(300, 600) * (attempt + 1)
-                        logger.warning(f"Booklooker Blockade ({resp.status}). Erzwungene Pause für {wait}s...")
+                        logger.warning(f"Blockade ({resp.status}). Pause für {wait}s...")
                         await asyncio.sleep(wait)
                         continue
                     
                     content = await resp.text()
                     
-                    # --- 🛑 IP-BLOCK ERKENNUNG ---
-                    if "wurde geblockt" in content or "automatisierte maschinelle Zugriff" in content or "solveCaptcha" in content:
-                        logger.critical(f"🛑 IP-SPERRE ERKANNT! Booklooker hat den Zugriff verweigert. URL: {url}")
+                    # Verbrauch tracken (Header + Body)
+                    if proxy_manager and proxy_args.get("proxy"):
+                        bytes_total = len(content.encode('utf-8')) + 500 # + Schätzung für Header
+                        budget_ok = await proxy_manager.track_request(bytes_total)
+                        if not budget_ok:
+                            GLOBAL_STOP_SCRAPE = True
+                            raise Exception("PROXY_BUDGET_EXCEEDED")
+
+                    if "wurde geblockt" in content or "solveCaptcha" in content:
+                        logger.critical(f"🛑 IP-SPERRE ERKANNT! URL: {url}")
                         GLOBAL_STOP_SCRAPE = True
                         raise Exception("IP_BLOCKED_BY_BOOKLOOKER")
                         
                     resp.raise_for_status()
                     return content
             except Exception as e:
-                if "IP_BLOCKED_BY_BOOKLOOKER" in str(e) or "SCRAPE_STOPPED_DUE_TO_BLOCK" in str(e):
+                if any(x in str(e) for x in ["IP_BLOCKED", "STOPPED", "BUDGET_EXCEEDED", "PROXY_REQUIRED"]):
                     raise e
 
                 if attempt == max_retries:
-                    logger.error(f"Alle {max_retries} Retries für {url} fehlgeschlagen: {e}")
                     raise e
                 wait_time = base_delay * (2 ** attempt)
-                logger.warning(f"Fehler bei {url}: {e}. Retry {attempt + 1}/{max_retries} in {wait_time}s...")
                 await asyncio.sleep(wait_time)
 
 
@@ -148,14 +168,14 @@ def extract_offer_links_from_page(html: str) -> list[tuple[str, bool]]:
     return unique_results
 
 
-async def fetch_and_process(session: aiohttp.ClientSession, link: str):
+async def fetch_and_process(session: aiohttp.ClientSession, link: str, proxy_manager: ProxyManager = None):
     """
     Ermittelt für eine Basis-URL die Seiten- und Bücherzahl.
     Gibt (link, highest_page, books_count) zurück.
     ROBUSTE Paginierung: erkennt 'page' aus Links und Text.
     """
     try:
-        html = await fetch_html(session, link)
+        html = await fetch_html(session, link, proxy_manager)
         soup = BeautifulSoup(html, 'lxml')
 
         # Bücheranzahl
@@ -199,9 +219,8 @@ async def fetch_and_process(session: aiohttp.ClientSession, link: str):
         return None
 
 
-async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
+async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool, proxy_manager: ProxyManager = None):
     """Fügt Links in sitetoscrape ein und berechnet vorab die Seitenzahl (anzahlSeiten)."""
-    # Suffix aus Umgebungsvariablen laden
     import os
     suffix = os.getenv("BL_URL_SUFFIX", "").strip()
     
@@ -211,32 +230,35 @@ async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool):
         if not cleaned_link:
             continue
         
-        # Suffix nur anhängen, wenn es nicht bereits im Link vorkommt
         if suffix and suffix not in cleaned_link:
-            # Trenner wählen: ? wenn noch keine Parameter da sind, sonst &
             separator = "&" if "?" in cleaned_link else "?"
-            # Das erste Zeichen des Suffixes (meist & oder ?) entfernen, falls der Trenner schon da ist
             clean_suffix = suffix.lstrip("&?")
             cleaned_link = f"{cleaned_link}{separator}{clean_suffix}"
             
         processed_links.append(cleaned_link)
 
     async with db_pool.acquire() as conn:
-        # Wir holen ALLE Links aus sitetoscrape, um ihre Seitenzahlen zu aktualisieren
+        # --- 🚀 NEU: Negativ-Listen Check ---
+        # Wir filtern Links aus, die bereits in library sind (egal welcher Status)
+        final_links = []
+        for l in processed_links:
+            exists = await conn.fetchval("SELECT id FROM library WHERE LinkToBL = $1", l)
+            if exists:
+                logger.info(f"Link bereits in Library bekannt (ID: {exists}). Überspringe.")
+                continue
+            final_links.append(l)
+
         rows = await conn.fetch("SELECT link FROM sitetoscrape")
         existing_links = [r["link"] for r in rows]
 
-    # Wir verarbeiten alle Links aus der Datei PLUS alle existierenden Links
-    links_to_fetch = list(set(processed_links + existing_links))
-
+    links_to_fetch = list(set(final_links + existing_links))
     if not links_to_fetch:
-        logger.info("Keine Links zum Aktualisieren gefunden.")
         return
 
-    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links (täglicher Refresh)...")
+    logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links...")
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            *(fetch_and_process(session, l) for l in links_to_fetch),
+            *(fetch_and_process(session, l, proxy_manager) for l in links_to_fetch),
             return_exceptions=True
         )
 
@@ -269,13 +291,12 @@ def build_page_url(base_link: str, page: int) -> str:
     return urlunparse((p.scheme, p.netloc, p.path, p.params, urlencode(q, doseq=True), p.fragment))
 
 
-async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list[tuple[str, bool]]:
+async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str, proxy_manager: ProxyManager = None) -> list[tuple[str, bool]]:
     """
     Lädt eine Übersichtsseite und gibt alle Angebots-Detaillinks zurück.
-    Zusätzlich loggt er bei Bedarf jede gefundene URL im Debug-Level.
     """
     try:
-        html_content = await fetch_html(session, page_url)
+        html_content = await fetch_html(session, page_url, proxy_manager)
         results = extract_offer_links_from_page(html_content)
         logger.info(f"Seite {page_url}: {len(results)} Detail-Links gefunden")
         for link, is_priv in results:
@@ -288,15 +309,15 @@ async def fetch_and_parse(session: aiohttp.ClientSession, page_url: str) -> list
         return []
 
 
-async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: str, db_pool, sitetoscrape_id: int) -> int:
+async def fetch_and_parse_and_store(session: aiohttp.ClientSession, page_url: str, db_pool, sitetoscrape_id: int, proxy_manager: ProxyManager = None) -> int:
     """
     Ruft fetch_and_parse auf, speichert jeden Angebots-Link in library und liefert die Anzahl gespeicherter Links.
     """
-    results = await fetch_and_parse(session, page_url)
-    if not results:
-        return 0
-
     try:
+        results = await fetch_and_parse(session, page_url, proxy_manager)
+        if not results:
+            return 0
+
         async with db_pool.acquire() as conn:
             # Wir nutzen unnest() um ein executemany mit Arrays in einem execute-Call abzubilden
             result = await conn.execute(
@@ -346,6 +367,7 @@ async def scrape_and_save_pages(db_pool):
 
     tasks = []
     async with aiohttp.ClientSession() as session:
+        pm = ProxyManager(db_pool)
         for r in rows:
             base = r["link"]
             n_pages = r["anzahlseiten"]
@@ -353,13 +375,9 @@ async def scrape_and_save_pages(db_pool):
             if n_pages <= 0:
                 continue
 
-            first_url = build_page_url(base, 1)
-            last_url = build_page_url(base, n_pages)
-            logger.info(f"Erzeuge Seiten für {base}: 1..{n_pages} (z.B. {first_url} ... {last_url})")
-
             for p in range(1, n_pages + 1):
                 page_url = build_page_url(base, p)
-                tasks.append(fetch_and_parse_and_store(session, page_url, db_pool, sitetoscrape_id))
+                tasks.append(fetch_and_parse_and_store(session, page_url, db_pool, sitetoscrape_id, pm))
 
         logger.info(f"Starte Scraping von {len(tasks)} Seiten…")
         for i in range(0, len(tasks), 50):
@@ -487,7 +505,7 @@ MAX_RETRIES = 2
 BATCH_SIZE = 10  # Kleine Batches für schnellere Reaktion auf Sperren
 
 
-async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None):
+async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool, base_url=None, fixed_costs=None, expected_sales=None, min_margin=None, zusatzkosten_low=None, zusatzkosten_high=None, steuer_satz=None, proxy_manager=None):
     from ebay_token_manager import get_token
     token = get_token()
     """
@@ -506,10 +524,12 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
         attempt += 1
         try:
             async with DETAIL_SEMAPHORE:
-                # ISBN-Check (löscht bei fehlender ISBN, gibt dann False zurück)
-                has_isbn, isbn, soup, dnb_props = await isbn_processing.process_entry(session, link, num, db_pool)
+                # ISBN-Check (löscht bei fehlender ISBN oder verkauftem Artikel)
+                has_isbn, isbn, soup, dnb_props = await isbn_processing.process_entry(session, link, num, db_pool, proxy_manager)
                 if not has_isbn:
-                    # bereits in missing_listings verschoben und gelöscht
+                    if isbn == "SOLD":
+                        logger.info(f"[{num}] Artikel bereits verkauft (Bestätigt). Aus Pipeline entfernt.")
+                        return "sold_cleanup"
                     return "filtered"
 
                 # Eigenschaften vorab auswerten, um Zustand, Titel und Verkäuferbewertung zu prüfen
@@ -718,26 +738,22 @@ async def process_library_links_async(db_pool):
         total_errors = 0
         processed = 0
         
+        pm = ProxyManager(db_pool)
         async with aiohttp.ClientSession() as session:
             from ebay_analytics import has_sufficient_quota
             
-            # in Batches verarbeiten
             for i in range(0, total_to_process, BATCH_SIZE):
-                # RATE LIMIT CHECK - Mindestens 1 Request übrig
                 can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=1)
                 if not can_continue:
                     logger.warning(f"eBay API Limit erreicht (0 verbleibend). Pause bis {reset_time}...")
                     break
 
-                # Nutze das verbleibende Kontingent, maximal jedoch BATCH_SIZE
                 current_batch_size = min(BATCH_SIZE, remaining)
                 batch = rows[i: i + current_batch_size]
                 
-                # Wenn wir durch die Anpassung den Index verschieben, müssen wir das im äußeren Loop eigentlich korrigieren,
-                # aber da wir nach diesem Batch ohnehin abbrechen (weil remaining < BATCH_SIZE), reicht das hier so aus.
                 tasks = [
                     asyncio.create_task(_process_one_entry(
-                        session, row, db_pool, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz
+                        session, row, db_pool, base_url, fixed_costs, expected_sales, min_margin, zusatzkosten_low, zusatzkosten_high, steuer_satz, pm
                     )) for row in batch
                 ]
                 results = await asyncio.gather(*tasks, return_exceptions=True)

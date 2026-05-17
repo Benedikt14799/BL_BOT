@@ -158,18 +158,39 @@ class BLBotApp(tb.Window):
         self.refresh_rate_limit()
 
     async def _update_dashboard_stats(self):
-        """Halt die Library-Statistiken aus der DB und aktualisiert die UI."""
+        """Halt die Library-Statistiken und Proxy-Daten aus der DB."""
         pool = await self._get_db_pool()
         if not pool: return
         
         try:
             stats = await DatabaseManager.get_library_stats(pool)
             
+            # Proxy Usage laden
+            from proxy_manager import ProxyManager
+            pm = ProxyManager(pool)
+            proxy_usage = await pm.get_current_usage()
+            
             def update_ui():
                 self.lbl_stat_pipeline.configure(text=f"{stats['pipeline']:,}".replace(",", "."))
                 self.lbl_stat_ready.configure(text=f"{stats['ready']:,}".replace(",", "."))
                 self.lbl_stat_listed.configure(text=f"{stats['listed']:,}".replace(",", "."))
                 self.lbl_stat_filtered.configure(text=f"{stats['filtered']:,}".replace(",", "."))
+                
+                # Proxy Update
+                mb = proxy_usage["bytes"] / (1024*1024)
+                cost = float(proxy_usage["cost"])
+                self.lbl_proxy_usage.configure(text=f"{mb:.1f} MB / {cost:.2f} €")
+                self.lbl_proxy_requests.configure(text=f"({proxy_usage['requests']} Requests)")
+                
+                # Gauge berechnen
+                budget = float(pm.daily_budget)
+                if budget > 0:
+                    percent = min(100, (cost / budget) * 100)
+                    self.gauge_proxy.configure(value=percent)
+                    self.lbl_proxy_limit_hint.configure(text=f"Limit: {budget:.2f} €")
+                    if percent > 90: self.gauge_proxy.configure(bootstyle=DANGER)
+                    elif percent > 70: self.gauge_proxy.configure(bootstyle=WARNING)
+                    else: self.gauge_proxy.configure(bootstyle=INFO)
             
             self.after(0, update_ui)
         except Exception as e:
@@ -308,6 +329,23 @@ class BLBotApp(tb.Window):
         tb.Label(stats_data, text="Aussortiert/Gefiltert:", font=("Helvetica", 10)).grid(row=1, column=2, sticky=W, padx=20, pady=(5,0))
         self.lbl_stat_filtered = tb.Label(stats_data, text="---", font=("Helvetica", 10, "bold"), bootstyle=DANGER)
         self.lbl_stat_filtered.grid(row=1, column=3, sticky=W, padx=10, pady=(5,0))
+
+        # --- 🌐 PROXY STATS ---
+        tb.Separator(stats_frame, orient=HORIZONTAL).pack(fill=X, pady=10)
+        proxy_row = tb.Frame(stats_frame)
+        proxy_row.pack(fill=X)
+        
+        tb.Label(proxy_row, text="Proxy-Verbrauch (Heute):", font=("Helvetica", 10, "bold")).pack(side=LEFT, padx=5)
+        self.lbl_proxy_usage = tb.Label(proxy_row, text="0 MB / 0,00 €", font=("Helvetica", 10), bootstyle=INFO)
+        self.lbl_proxy_usage.pack(side=LEFT, padx=10)
+        
+        self.lbl_proxy_requests = tb.Label(proxy_row, text="(0 Requests)", font=("Helvetica", 9, "italic"), bootstyle=SECONDARY)
+        self.lbl_proxy_requests.pack(side=LEFT, padx=5)
+        
+        self.gauge_proxy = tb.Progressbar(stats_frame, bootstyle=INFO, maximum=100, value=0)
+        self.gauge_proxy.pack(fill=X, padx=5, pady=(5,0))
+        self.lbl_proxy_limit_hint = tb.Label(stats_frame, text="Limit: ---", font=("Helvetica", 8, "italic"))
+        self.lbl_proxy_limit_hint.pack(anchor=E, padx=5)
 
         # Manual Update Button
         self.btn_refresh_stats = tb.Button(stats_frame, text="📊 Statistiken aktualisieren", bootstyle=(SECONDARY, OUTLINE), command=self._refresh_dashboard)
@@ -495,7 +533,12 @@ class BLBotApp(tb.Window):
             "SHIPPING_DESCRIPTION_EBAY": tk.StringVar(value="Standardversand"),
             "DELIVERY_TIME_EBAY": tk.StringVar(value="1-3 Werktage"),
             "BL_URL_SUFFIX": tk.StringVar(),
-            "MAX_SYNC_WORKERS": tk.StringVar(value="5")
+            "MAX_SYNC_WORKERS": tk.StringVar(value="5"),
+            "USE_PROXIES": tk.StringVar(value="False"),
+            "PROXY_URL": tk.StringVar(),
+            "PROXY_PRICE_PER_GB": tk.StringVar(value="1.50"),
+            "PROXY_DAILY_BUDGET_EUR": tk.StringVar(value="5.00"),
+            "PROXY_KILL_SWITCH": tk.StringVar(value="True")
         }
         
         container = tb.Frame(self.tab_settings, padding=20)
@@ -517,7 +560,7 @@ class BLBotApp(tb.Window):
         self._add_setting_row(left_frame, "EBAY_CLIENT_ID:", "EBAY_CLIENT_ID", row=4, is_secret=True, is_required=True, tooltip_text="Deine eBay OAuth Client-ID (identisch mit App-ID, wird für den Token-Refresh benötigt).")
         self._add_setting_row(left_frame, "EBAY_CLIENT_SECRET:", "EBAY_CLIENT_SECRET", row=5, is_secret=True, is_required=True, tooltip_text="Dein eBay OAuth Client Secret (identisch mit Cert-ID, wird für den Token-Refresh benötigt).")
         self._add_setting_row(left_frame, "EBAY_REFRESH_TOKEN:", "EBAY_REFRESH_TOKEN", row=6, is_secret=True, is_required=True, tooltip_text="Einmalig generierter Refresh Token (18 Monate gültig). Der Access Token wird automatisch erneuert.")
-        self._add_setting_row(left_frame, "EBAY_ENV:", "EBAY_ENV", row=7, is_combobox=True, tooltip_text="SANDBOX für Tests, PRODUCTION für echte eBay-Aufschaltungen.")
+        self._add_setting_row(left_frame, "EBAY_ENV:", "EBAY_ENV", row=7, is_combobox=True, values=["PRODUCTION", "SANDBOX"], tooltip_text="SANDBOX für Tests, PRODUCTION für echte eBay-Aufschaltungen.")
         self._add_setting_row(left_frame, "Fixkosten monatlich (€):", "FIXKOSTEN_MONATLICH", row=8, is_required=True, tooltip_text="Gesamte monatliche Kosten des eBay-Shops (z.B. 79.95), die anteilig auf Verkäufe umgelegt werden.")
         self._add_setting_row(left_frame, "Erwartete Verkäufe:", "ERWARTETE_VERKAEUFE", row=9, is_required=True, tooltip_text="Wie viele Artikel du ca. im Monat verkaufst (zur Umlage der Fixkosten).")
 
@@ -540,6 +583,16 @@ class BLBotApp(tb.Window):
         self._add_setting_row(right_frame, "eBay Lieferzeit:", "DELIVERY_TIME_EBAY", row=5, tooltip_text="Information zur Lieferzeit, die bei eBay als Textbaustein mitübergeben werden soll.")
         self._add_setting_row(right_frame, "BL Link Suffix:", "BL_URL_SUFFIX", row=6, tooltip_text="Anhängsel für Booklooker Links (z.B. &searchUserTyp=2&hasPic=on...), wird automatisch an jeden Link im Scraper angehängt.")
         self._add_setting_row(right_frame, "Parallele Sync-Worker:", "MAX_SYNC_WORKERS", row=7, tooltip_text="Wie viele Bücher GLEICHZEITIG geprüft werden sollen. Empfohlen: 5. Ein höherer Wert ist schneller, birgt aber Risiko für Sperren.")
+        
+        # --- PROXY SETTINGS ---
+        tb.Separator(right_frame, orient=HORIZONTAL).grid(row=8, column=0, columnspan=2, pady=15, sticky=EW)
+        tb.Label(right_frame, text="Residential Proxy Konfiguration", font=("Helvetica", 10, "bold")).grid(row=9, column=0, columnspan=2, sticky=W, padx=5)
+        
+        self._add_setting_row(right_frame, "Proxies nutzen:", "USE_PROXIES", row=10, is_combobox=True, values=["True", "False"], tooltip_text="Aktiviert die Nutzung von rotierenden Residential Proxies für Booklooker HTML-Anfragen.")
+        self._add_setting_row(right_frame, "Proxy URL:", "PROXY_URL", row=11, is_secret=True, tooltip_text="Format: http://user:pass@host:port")
+        self._add_setting_row(right_frame, "Preis pro GB (€):", "PROXY_PRICE_PER_GB", row=12, tooltip_text="Kosten deines Proxy-Anbieters pro Gigabyte Traffic.")
+        self._add_setting_row(right_frame, "Tagesbudget (€):", "PROXY_DAILY_BUDGET_EUR", row=13, tooltip_text="Maximaler Betrag, der pro Tag für Proxies ausgegeben werden darf.")
+        self._add_setting_row(right_frame, "Kill-Switch:", "PROXY_KILL_SWITCH", row=14, is_combobox=True, values=["True", "False"], tooltip_text="Bei True stoppt der Bot sofort, wenn der Proxy ausfällt oder das Budget erreicht ist.")
         
         lbl_required = tb.Label(right_frame, text="* Pflichtfelder", font=("Helvetica", 8), bootstyle="danger")
         lbl_required.grid(row=8, column=1, sticky=E, pady=(10, 0))
@@ -576,7 +629,7 @@ class BLBotApp(tb.Window):
         btn_reset.pack(padx=10, pady=5)
         ToolTip(btn_reset, text="Löscht alle Tabellen (library, sitetoscrape, sold_listings) und setzt die SKU-Sequenz zurück.")
 
-    def _add_setting_row(self, parent_frame, label_text, var_key, row, is_secret=False, is_combobox=False, tooltip_text="", is_required=False):
+    def _add_setting_row(self, parent_frame, label_text, var_key, row, is_secret=False, is_combobox=False, values=None, tooltip_text="", is_required=False):
         lbl_frame = tb.Frame(parent_frame)
         lbl_frame.grid(row=row, column=0, pady=10, sticky=W)
         
@@ -586,23 +639,19 @@ class BLBotApp(tb.Window):
             
         lbl = tb.Label(lbl_frame, text=label_full)
         lbl.pack(side=LEFT)
-        
-        if is_required:
-            lbl_star = tb.Label(lbl_frame, text="", bootstyle="danger") # We could put the star in a separate label for color
-            # but appending it to the main label is cleaner for layout. 
-            # Let's just append it to the text in the main label above.
-            pass
+            
         if tooltip_text:
             info_lbl = tb.Label(lbl_frame, text=" ℹ️", font=("Helvetica", 9), cursor="hand2")
             info_lbl.pack(side=LEFT, padx=(0, 5))
             ToolTip(info_lbl, text=tooltip_text, bootstyle=INFO, delay=100)
             
         if is_combobox:
-            cb = tb.Combobox(parent_frame, textvariable=self.settings_vars[var_key], values=["SANDBOX", "PRODUCTION"])
-            cb.grid(row=row, column=1, sticky=EW, padx=10)
+            entry = tb.Combobox(parent_frame, textvariable=self.settings_vars[var_key], values=values or [], state="readonly")
         else:
-            show_char = "*" if is_secret else ""
-            tb.Entry(parent_frame, textvariable=self.settings_vars[var_key], show=show_char).grid(row=row, column=1, sticky=EW, padx=10)
+            show = "*" if is_secret else ""
+            entry = tb.Entry(parent_frame, textvariable=self.settings_vars[var_key], show=show)
+            
+        entry.grid(row=row, column=1, pady=10, padx=(20, 0), sticky=EW)
 
     # --- Actions ---
     def refresh_rate_limit(self):
