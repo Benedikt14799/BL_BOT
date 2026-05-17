@@ -875,21 +875,30 @@ async def process_library_links_async(db_pool):
                             used_in_session = current_buy_used  # Bei Counter-Reset über Nacht
                             
                         elapsed_seconds = now - start_time
-                        elapsed_hours = elapsed_seconds / 3600.0
+                        elapsed_hours_float = elapsed_seconds / 3600.0
                         
-                        if used_in_session > 0 and elapsed_hours > 0:
-                            tokens_per_hour = used_in_session / elapsed_hours
+                        if used_in_session > 0 and elapsed_hours_float > 0:
+                            tokens_per_hour = used_in_session / elapsed_hours_float
                             hours_left = buy_remaining / tokens_per_hour
                             
                             from datetime import datetime, timedelta
-                            exhaustion_dt = datetime.now() + timedelta(hours=hours_left)
+                            now_dt = datetime.now()
+                            exhaustion_dt = now_dt + timedelta(hours=hours_left)
                             
-                            if exhaustion_dt.date() == datetime.now().date():
-                                time_str = exhaustion_dt.strftime('%H:%M Uhr heute')
-                            else:
-                                time_str = exhaustion_dt.strftime('%d.%m. um %H:%M Uhr')
+                            # Nächsten Reset-Zeitpunkt berechnen (täglich um 02:00 Uhr Berlin-Zeit)
+                            reset_dt = now_dt.replace(hour=2, minute=0, second=0, microsecond=0)
+                            if now_dt >= reset_dt:
+                                reset_dt += timedelta(days=1)
                                 
-                            forecast_msg = f"⏳ *Prognose:* Scraping-Tokens erschöpft ca. *{time_str}* (Verbrauch: ~{tokens_per_hour:.1f}/h)"
+                            if exhaustion_dt >= reset_dt:
+                                forecast_msg = f"⏳ *Prognose:* Reicht locker bis zum nächsten Reset! (Verbrauch: ~{tokens_per_hour:.1f}/h)"
+                            else:
+                                if exhaustion_dt.date() == now_dt.date():
+                                    time_str = exhaustion_dt.strftime('%H:%M Uhr heute')
+                                else:
+                                    time_str = exhaustion_dt.strftime('%d.%m. um %H:%M Uhr')
+                                    
+                                forecast_msg = f"⏳ *Prognose:* Scraping-Tokens erschöpft ca. *{time_str}* (Verbrauch: ~{tokens_per_hour:.1f}/h)"
                         else:
                             forecast_msg = "⏳ *Prognose:* Keine Erschöpfung absehbar (kein aktiver Verbrauch in dieser Session)"
                             
