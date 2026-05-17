@@ -413,12 +413,16 @@ async def scrape_and_save_pages(db_pool):
                 page_url = build_page_url(base, p)
                 tasks.append(fetch_and_parse_and_store(session, page_url, db_pool, sitetoscrape_id, pm))
 
-        logger.info(f"Starte Scraping von {len(tasks)} Seiten…")
-        for i in range(0, len(tasks), 50):
-            results = await asyncio.gather(*tasks[i: i + 50], return_exceptions=True)
-            for res in results:
+        logger.info(f"Starte detailliertes, sicheres Scraping von {len(tasks)} Übersichtsseiten (seriell)…")
+        for idx, task_coro in enumerate(tasks):
+            try:
+                res = await task_coro
                 if isinstance(res, int):
                     total_scraped += res
+                # Kurze Pause zwischen den Übersichtsseiten zur absoluten Stabilität
+                await asyncio.sleep(random.uniform(4.0, 8.0))
+            except Exception as e:
+                logger.error(f"Fehler bei Seite {idx + 1}: {e}")
 
     logger.info(f"📊 ZUSAMMENFASSUNG SCRAPING: Erwartet (laut Booklooker-Anzeige): {total_expected} | Neu in Datenbank gespeichert: {total_scraped}")
 
