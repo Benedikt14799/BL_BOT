@@ -442,7 +442,7 @@ async def scrape_and_save_pages(db_pool):
 # Detailverarbeitung – optimiert
 # ===============================
 
-async def find_backups_for_isbn(session, isbn, original_link, original_condition_norm, fixed_costs, expected_sales, min_margin, addcost_low, addcost_high, steuer_satz):
+async def find_backups_for_isbn(session, isbn, original_link, original_condition_norm, fixed_costs, expected_sales, min_margin, addcost_low, addcost_high, steuer_satz, proxy_manager=None):
     """
     Sucht nach Backups auf Booklooker für eine gegebene ISBN.
     Hierarchie:
@@ -462,7 +462,7 @@ async def find_backups_for_isbn(session, isbn, original_link, original_condition
     search_url = f"https://www.booklooker.de/B%C3%BCcher/Angebote/isbn={isbn}?sortOrder=preis_total"
     
     try:
-        html = await fetch_html(session, search_url)
+        html = await fetch_html(session, search_url, proxy_manager)
     except Exception as e:
         logger.debug(f"Fehler bei Backup-Suche für {isbn}: {e}")
         return backups
@@ -491,7 +491,7 @@ async def find_backups_for_isbn(session, isbn, original_link, original_condition
             continue
             
         try:
-            detail_html = await fetch_html(session, full_url)
+            detail_html = await fetch_html(session, full_url, proxy_manager)
             detail_soup = BeautifulSoup(detail_html, "lxml")
             
             props = bl_processing.PropertyExtractor.extract_property_items(detail_soup)
@@ -665,7 +665,8 @@ async def _process_one_entry(session: aiohttp.ClientSession, row: dict, db_pool,
                     backups = await find_backups_for_isbn(
                         session, isbn, link, cond_norm, 
                         fixed_costs, expected_sales, min_margin, 
-                        zusatzkosten_low, zusatzkosten_high, steuer_satz
+                        zusatzkosten_low, zusatzkosten_high, steuer_satz,
+                        proxy_manager
                     )
                     
                     if not backups["b1"] and not backups["b2"]:
