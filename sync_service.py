@@ -127,10 +127,15 @@ async def run_scraping():
                         if line and not line.startswith("#"):
                             links_to_scrape.append(line)
             
-            if links_to_scrape:
-                await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool)
-            
-            await scrape.scrape_and_save_pages(pool)
+            skip_categories = os.getenv("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
+            if skip_categories:
+                logger.info("SKIP_CATEGORY_SEARCH ist 'true'. Überspringe Kategorie-Suche im Hintergrund-Dienst...")
+            else:
+                pm = ProxyManager(pool)
+                if links_to_scrape:
+                    await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool, pm)
+                await scrape.scrape_and_save_pages(pool)
+                
             await scrape.perform_webscrape_async(pool)
             logger.info("=== SCRAPING ABGESCHLOSSEN ===")
         finally:
