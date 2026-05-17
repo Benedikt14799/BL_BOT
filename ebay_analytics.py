@@ -126,6 +126,31 @@ def parse_rate_limit_response(data: dict) -> dict:
                         if res_name == sell_fallback and not sell_found:
                             result["sell"] = parsed_rate
 
+        # Overrides aus .env anwenden
+        buy_override = os.environ.get("EBAY_LIMIT_BUY_OVERRIDE")
+        sell_override = os.environ.get("EBAY_LIMIT_SELL_OVERRIDE")
+        reset_override = os.environ.get("EBAY_RESET_TIME_OVERRIDE")
+        
+        for key, override_val in [("buy", buy_override), ("sell", sell_override)]:
+            if override_val:
+                try:
+                    limit_val = int(override_val.strip().strip("'").strip('"'))
+                    if result[key]["limit"] > 0:
+                        # Wenn wir echte API-Werte haben, berechnen wir 'used' basierend auf dem API-Verbrauch
+                        used = result[key]["limit"] - result[key]["remaining"]
+                    else:
+                        used = 0
+                    result[key]["limit"] = limit_val
+                    result[key]["used"] = max(0, used)
+                    result[key]["remaining"] = max(0, limit_val - used)
+                except Exception as e:
+                    logger.error(f"Fehler beim Anwenden des {key} Overrides: {e}")
+                    
+        if reset_override:
+            clean_reset = reset_override.strip().strip("'").strip('"')
+            result["buy"]["reset"] = clean_reset
+            result["sell"]["reset"] = clean_reset
+
         return result
     except Exception as e:
         logger.error(f"Fehler beim Parsen der Rate Limit Response: {e}")

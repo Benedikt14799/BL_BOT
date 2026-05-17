@@ -792,7 +792,15 @@ async def process_library_links_async(db_pool):
         
         pm = ProxyManager(db_pool)
         async with aiohttp.ClientSession() as session:
-            from ebay_analytics import has_sufficient_quota
+            from ebay_analytics import has_sufficient_quota, get_rate_limit_status
+            
+            # Initialen Token-Verbrauch für die stündliche Prognose holen
+            initial_sell_used = 0
+            try:
+                rate_limits = await get_rate_limit_status(session)
+                initial_sell_used = rate_limits.get("sell", {}).get("used", 0)
+            except Exception as e:
+                logger.warning(f"Konnte initiale eBay Rate Limits nicht laden: {e}")
             
             for i in range(0, total_to_process, BATCH_SIZE):
                 can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=1)
@@ -857,10 +865,39 @@ async def process_library_links_async(db_pool):
                         rate_limits = await get_rate_limit_status(session)
                         buy = rate_limits.get("buy", {})
                         sell = rate_limits.get("sell", {})
+                        
+                        sell_remaining = sell.get('remaining', 0)
+                        current_sell_used = sell.get('used', 0)
+                        
+                        # Verbrauch berechnen
+                        used_in_session = current_sell_used - initial_sell_used
+                        if used_in_session < 0:
+                            used_in_session = current_sell_used  # Bei Counter-Reset über Nacht
+                            
+                        elapsed_seconds = now - start_time
+                        elapsed_hours = elapsed_seconds / 3600.0
+                        
+                        if used_in_session > 0 and elapsed_hours > 0:
+                            tokens_per_hour = used_in_session / elapsed_hours
+                            hours_left = sell_remaining / tokens_per_hour
+                            
+                            from datetime import datetime, timedelta
+                            exhaustion_dt = datetime.now() + timedelta(hours=hours_left)
+                            
+                            if exhaustion_dt.date() == datetime.now().date():
+                                time_str = exhaustion_dt.strftime('%H:%M Uhr heute')
+                            else:
+                                time_str = exhaustion_dt.strftime('%d.%m. um %H:%M Uhr')
+                                
+                            forecast_msg = f"⏳ *Prognose:* Upload-Tokens erschöpft ca. *{time_str}* (Verbrauch: ~{tokens_per_hour:.1f}/h)"
+                        else:
+                            forecast_msg = "⏳ *Prognose:* Keine Erschöpfung absehbar (kein aktiver Verbrauch in dieser Session)"
+                            
                         ebay_stats = (
                             f"🔑 *eBay API-Kontingent:*\n"
                             f"🛒 Buy (Konkurrenz): `{buy.get('remaining', 0)}` / `{buy.get('limit', 0)}` übrig\n"
                             f"🚀 Sell (Uploads): `{sell.get('remaining', 0)}` / `{sell.get('limit', 0)}` übrig\n"
+                            f"{forecast_msg}\n"
                             f"🔄 Reset: {buy.get('reset', 'Unbekannt')}"
                         )
                     except Exception as e_ebay:
