@@ -302,8 +302,9 @@ async def process_orders():
             # Links generieren
             ebay_details_url = f"https://www.ebay.de/sh/ord/details?orderid={order_id}"
             
-            # Shoop 5% Cashback auf den reinen Buch-Einkaufspreis
-            cashback = purchase_price * Decimal("0.05")
+            # Shoop 5% Cashback auf den reinen Buch-Einkaufspreis (Netto exkl. 7% MwSt)
+            purchase_price_net = purchase_price / Decimal("1.07")
+            cashback = purchase_price_net * Decimal("0.05")
             cashback = round(cashback, 2)
             
             # Gesamtprofit & neue Marge
