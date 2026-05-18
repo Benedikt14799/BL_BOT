@@ -109,18 +109,30 @@ async def write_to_google_sheet(order_data: dict):
             first_row = sheet.row_values(1)
             if not first_row or first_row[0] != "Order-ID":
                 header = [
-                    "Order-ID", "Datum", "Vorname", "Nachname", "Strasse", 
+                    "Order-ID", "Datum", "Vorname", "Nachname", "Strasse", "Hausnummer",
                     "PLZ", "Ort", "Land", "Titel", "Gewinn (EUR)", "Marge (%)", "Booklooker-Link"
                 ]
                 sheet.insert_row(header, 1)
 
-            # Format: Order-ID, Datum, Vorname, Nachname, Str, PLZ, Ort, Land, Titel, Gewinn, Marge, Booklooker-Link
+            # Strasse und Hausnummer trennen
+            import re
+            street_val = order_data.get("street", "")
+            match = re.match(r"^(.+?)\s*(\d+\s*[a-zA-Z]?(?:\s*-\s*\d+)?)$", street_val.strip())
+            if match:
+                street_name = match.group(1).strip()
+                house_number = match.group(2).strip()
+            else:
+                street_name = street_val.strip()
+                house_number = ""
+
+            # Format: Order-ID, Datum, Vorname, Nachname, Strasse, Hausnummer, PLZ, Ort, Land, Titel, Gewinn, Marge, Booklooker-Link
             row = [
                 order_data["order_id"],
                 order_data["creation_date"].strftime("%d.%m.%Y %H:%M"),
                 order_data.get("first_name", ""),
                 order_data.get("last_name", ""),
-                order_data.get("street", ""),
+                street_name,
+                house_number,
                 order_data.get("zip", ""),
                 order_data.get("city", ""),
                 order_data.get("country", ""),
