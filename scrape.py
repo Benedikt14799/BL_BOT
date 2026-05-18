@@ -1000,12 +1000,29 @@ async def process_library_links_async(db_pool):
                     except Exception as e_ebay:
                         ebay_stats = f"⚠️ eBay-Quota Fehler: {e_ebay}"
                     
+                    # Proxy Daten holen
+                    proxy_stats = ""
+                    try:
+                        from proxy_manager import ProxyManager
+                        pm = ProxyManager(db_pool)
+                        proxy = await pm.get_current_usage()
+                        mb = proxy["bytes"] / (1024*1024)
+                        cost = float(proxy["cost"])
+                        proxy_stats = (
+                            f"🌐 *Proxy-Verbrauch heute:*\n"
+                            f"📦 {mb:.1f} MB | 💸 {cost:.2f} €\n"
+                            f"🔢 {proxy['requests']} Requests"
+                        ).replace(",", ".")
+                    except Exception as e_proxy:
+                        proxy_stats = f"⚠️ Proxy-Verbrauch-Fehler: {e_proxy}"
+                    
                     report_msg = (
                         f"⏰ *Stündlicher Scraper Report* (Laufzeit: {elapsed_hours}h {elapsed_mins}m)\n\n"
                         f"📈 *Fortschritt:* `{processed}` / `{total_to_process}` ({(processed/total_to_process)*100:.1f}%)\n"
                         f"📚 *In dieser Stunde:* ok={hourly_ok}, filtered={hourly_filtered}, errors={hourly_errors}\n"
                         f"🏆 *Gesamt (Session):* ok={total_ok}, filtered={total_filtered}, errors={total_errors}\n\n"
                         f"{ebay_stats}\n\n"
+                        f"{proxy_stats}\n\n"
                         f"{db_stats}"
                     )
                     await send_telegram_alert(report_msg)
