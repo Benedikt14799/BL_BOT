@@ -241,11 +241,74 @@ async def service_loop():
             await asyncio.sleep(600)
 
 
+SERVICE_LOCK_FILE = os.path.join(os.path.dirname(__file__), "sync_service.lock")
+
+def is_pid_running(pid: int) -> bool:
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+from contextlib import contextmanager
+
+@contextmanager
+def service_lock():
+    if os.path.exists(SERVICE_LOCK_FILE):
+        try:
+            with open(SERVICE_LOCK_FILE, "r") as f:
+                content = f.read().strip()
+            if content:
+                pid = int(content)
+                if is_pid_running(pid):
+                    logger.warning(f"⚠️ Sync-Service läuft bereits mit PID {pid}. Breche ab.")
+                    raise RuntimeError(f"Sync-Service läuft bereits (PID {pid})")
+                else:
+                    logger.info(f"Veraltete Service-Sperrdatei gefunden (PID {pid} läuft nicht mehr). Lösche sie.")
+                    os.remove(SERVICE_LOCK_FILE)
+        except (ValueError, OSError) as e:
+            logger.warning(f"Fehler beim Lesen der Service-Sperrdatei: {e}. Lösche sie.")
+            try:
+                os.remove(SERVICE_LOCK_FILE)
+            except OSError:
+                pass
+
+    my_pid = os.getpid()
+    try:
+        with open(SERVICE_LOCK_FILE, "w") as f:
+            f.write(str(my_pid))
+        logger.info(f"Service-Sperrdatei erstellt für PID {my_pid}.")
+        yield
+    finally:
+        try:
+            if os.path.exists(SERVICE_LOCK_FILE):
+                with open(SERVICE_LOCK_FILE, "r") as f:
+                    content = f.read().strip()
+                if content == str(my_pid):
+                    os.remove(SERVICE_LOCK_FILE)
+                    logger.info(f"Service-Sperrdatei für PID {my_pid} gelöscht.")
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen der Service-Sperrdatei: {e}")
+
+
 async def main():
     await service_loop()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        with service_lock():
+            asyncio.run(main())
+    except RuntimeError as e:
+        logger.warning(f"Dienst-Start verhindert: {e}")
     except KeyboardInterrupt:
         logger.info("Service durch Benutzer beendet.")
