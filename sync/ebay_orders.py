@@ -302,11 +302,26 @@ async def process_orders():
             # Links generieren
             ebay_details_url = f"https://www.ebay.de/sh/ord/details?orderid={order_id}"
             
+            # Shoop 5% Cashback auf den reinen Buch-Einkaufspreis
+            cashback = purchase_price * Decimal("0.05")
+            cashback = round(cashback, 2)
+            
+            # Gesamtprofit & neue Marge
+            total_profit = net_profit + cashback
+            new_margin_percent = Decimal("0.00")
+            total_ek = purchase_price + purchase_shipping
+            if total_ek > 0:
+                new_margin_percent = (total_profit / total_ek) * 100
+                new_margin_percent = round(new_margin_percent, 2)
+            
             # Notification bauen (Emoji durch Text ersetzen für Windows Console logs, Telegram kann Emojis)
             msg = (
                 f"🎉 *NEUER VERKAUF!*\n"
                 f"📖 *Line:* {title}\n"
-                f"💰 *Profit:* {net_profit} Euro ({margin_percent}% Marge)\n"
+                f"💰 *Profit (Reingewinn):* {net_profit} Euro ({margin_percent}% Marge)\n"
+                f"💸 *Cashback (Shoop 5%):* {cashback} Euro\n"
+                f"📈 *Gesamtprofit:* {total_profit} Euro ({new_margin_percent}% Marge)\n"
+                f"📢 *Werbekosten (eBay Ad):* {ad_fee} Euro\n"
                 f"🔗 *Link:* [Booklooker-Link]({linktobl})\n"
                 f"📋 *eBay-Details:* [Bestell-Details]({ebay_details_url})"
             )
