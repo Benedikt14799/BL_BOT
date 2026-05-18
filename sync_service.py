@@ -125,27 +125,30 @@ async def run_scraping():
         db_url = os.getenv("DATABASE_URL")
         pool = await DatabaseManager.create_pool(db_url)
         try:
-            # Wir laden Links aus links.txt (wie in main.py)
-            links_to_scrape = []
-            links_file_path = "links.txt"
-            if os.path.exists(links_file_path):
-                with open(links_file_path, "r", encoding="utf-8") as file:
-                    for line in file:
-                        line = line.strip()
-                        if line and not line.startswith("#"):
-                            links_to_scrape.append(line)
-            
-            skip_categories = os.getenv("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
-            if skip_categories:
-                logger.info("SKIP_CATEGORY_SEARCH ist 'true'. Überspringe Kategorie-Suche im Hintergrund-Dienst...")
-            else:
-                pm = ProxyManager(pool)
-                if links_to_scrape:
-                    await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool, pm)
-                await scrape.scrape_and_save_pages(pool)
+            with scrape.scraping_lock():
+                # Wir laden Links aus links.txt (wie in main.py)
+                links_to_scrape = []
+                links_file_path = "links.txt"
+                if os.path.exists(links_file_path):
+                    with open(links_file_path, "r", encoding="utf-8") as file:
+                        for line in file:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                links_to_scrape.append(line)
                 
-            await scrape.perform_webscrape_async(pool)
-            logger.info("=== SCRAPING ABGESCHLOSSEN ===")
+                skip_categories = os.getenv("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
+                if skip_categories:
+                    logger.info("SKIP_CATEGORY_SEARCH ist 'true'. Überspringe Kategorie-Suche im Hintergrund-Dienst...")
+                else:
+                    pm = ProxyManager(pool)
+                    if links_to_scrape:
+                        await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool, pm)
+                    await scrape.scrape_and_save_pages(pool)
+                    
+                await scrape.perform_webscrape_async(pool)
+                logger.info("=== SCRAPING ABGESCHLOSSEN ===")
+        except RuntimeError as e:
+            logger.warning(str(e))
         finally:
             await pool.close()
     except Exception as e:

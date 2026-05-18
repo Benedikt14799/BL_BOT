@@ -65,19 +65,26 @@ async def main():
         if not links_to_scrape:
             logger.info("Es wurden keine neuen Links zum Scrapen übergeben (links.txt ist leer oder fehlt). Alte Einträge werden im nächsten Schritt verarbeitet.")
 
-        skip_categories = os.environ.get("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
-        if skip_categories:
-            logger.info("SKIP_CATEGORY_SEARCH ist 'true'. Überspringe Kategorie-Suche und starte direkt mit wartenden Büchern...")
-        else:
-            pm = ProxyManager(db_pool)
-            await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool, pm)
-            await scrape.scrape_and_save_pages(db_pool)
-            
-        results = await scrape.perform_webscrape_async(db_pool)
-        
-        items_saved = results.get("ok", 0)
-        filtered = results.get("filtered", 0)
-        errors = results.get("errors", 0)
+        try:
+            with scrape.scraping_lock():
+                skip_categories = os.environ.get("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
+                if skip_categories:
+                    logger.info("SKIP_CATEGORY_SEARCH ist 'true'. Überspringe Kategorie-Suche und starte direkt mit wartenden Büchern...")
+                else:
+                    pm = ProxyManager(db_pool)
+                    await scrape.insert_links_into_sitetoscrape(links_to_scrape, db_pool, pm)
+                    await scrape.scrape_and_save_pages(db_pool)
+                    
+                results = await scrape.perform_webscrape_async(db_pool)
+                
+                items_saved = results.get("ok", 0)
+                filtered = results.get("filtered", 0)
+                errors = results.get("errors", 0)
+        except RuntimeError as e:
+            logger.warning(str(e))
+            items_saved = 0
+            filtered = 0
+            errors = 0
 
         upload_to_ebay = os.environ.get("UPLOAD_TO_EBAY", "").lower() == "true"
         if upload_to_ebay:

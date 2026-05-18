@@ -1,4 +1,5 @@
 # scrape.py
+import os
 import logging
 import re
 import asyncio
@@ -11,6 +12,8 @@ import logging
 from typing import List, Dict, Optional
 from datetime import datetime
 from proxy_manager import ProxyManager
+import sys
+from contextlib import contextmanager
 
 import bl_processing
 import database
@@ -20,6 +23,66 @@ import price_processing
 from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
+
+LOCK_FILE = os.path.join(os.path.dirname(__file__), "scraping.lock")
+
+def is_pid_running(pid: int) -> bool:
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+@contextmanager
+def scraping_lock():
+    # 1. Prüfen, ob eine Sperrdatei existiert
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE, "r") as f:
+                content = f.read().strip()
+            if content:
+                pid = int(content)
+                if is_pid_running(pid):
+                    logger.warning(f"⚠️ Scraping-Prozess läuft bereits mit PID {pid}. Breche ab.")
+                    raise RuntimeError(f"Scraper läuft bereits (PID {pid})")
+                else:
+                    logger.info(f"Veraltete Sperrdatei gefunden (PID {pid} läuft nicht mehr). Lösche sie.")
+                    os.remove(LOCK_FILE)
+        except (ValueError, OSError) as e:
+            logger.warning(f"Fehler beim Lesen der Sperrdatei: {e}. Lösche sie.")
+            try:
+                os.remove(LOCK_FILE)
+            except OSError:
+                pass
+
+    # 2. Sperrdatei erstellen
+    my_pid = os.getpid()
+    try:
+        with open(LOCK_FILE, "w") as f:
+            f.write(str(my_pid))
+        logger.info(f"Sperrdatei erstellt für PID {my_pid}.")
+        yield
+    finally:
+        # 3. Sperrdatei löschen
+        try:
+            if os.path.exists(LOCK_FILE):
+                with open(LOCK_FILE, "r") as f:
+                    content = f.read().strip()
+                if content == str(my_pid):
+                    os.remove(LOCK_FILE)
+                    logger.info(f"Sperrdatei für PID {my_pid} gelöscht.")
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen der Sperrdatei: {e}")
 number_pattern = re.compile(r"\d+")
 
 # Optimiert für maximale Stabilität (3 Worker, höhere Delays)
@@ -803,9 +866,34 @@ async def process_library_links_async(db_pool):
                 logger.warning(f"Konnte initiale eBay Rate Limits nicht laden: {e}")
             
             for i in range(0, total_to_process, BATCH_SIZE):
-                can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=1)
-                if not can_continue:
-                    logger.warning(f"eBay API Limit erreicht (0 verbleibend). Pause bis {reset_time}...")
+                # Vor jedem Batch prüfen, ob ein Stopp-Signal vorliegt
+                if os.path.exists(os.path.join(os.path.dirname(__file__), "stop_service.flag")):
+                    logger.warning("Stop-Flag (stop_service.flag) in scrape.py erkannt. Beende Detailverarbeitung vorzeitig...")
+                    break
+
+                while True:
+                    if os.path.exists(os.path.join(os.path.dirname(__file__), "stop_service.flag")):
+                        logger.warning("Stop-Flag (stop_service.flag) in scrape.py erkannt. Beende Detailverarbeitung...")
+                        break
+
+                    can_continue, remaining, reset_time = await has_sufficient_quota(session, min_required=1)
+                    if can_continue:
+                        break
+
+                    # Kein Kontingent mehr -> Sende einmalig eine Benachrichtigung und warte
+                    msg = f"⚠️ *eBay API-Limit erreicht* (0 verbleibend).\nScraper pausiert bis zum Reset um *{reset_time}*."
+                    logger.warning(msg)
+                    await send_telegram_alert(msg)
+
+                    # In 10-Minuten-Schritten schlafen und stop_service.flag prüfen
+                    wait_minutes = 10
+                    for _ in range(wait_minutes * 6):  # 10 Minuten = 60 * 10 Sekunden
+                        if os.path.exists(os.path.join(os.path.dirname(__file__), "stop_service.flag")):
+                            break
+                        await asyncio.sleep(10)
+
+                # Falls wir wegen Stop-Flag abgebrochen haben
+                if os.path.exists(os.path.join(os.path.dirname(__file__), "stop_service.flag")):
                     break
 
                 current_batch_size = min(BATCH_SIZE, remaining)

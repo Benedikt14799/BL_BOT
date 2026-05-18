@@ -86,7 +86,7 @@ def parse_rate_limit_response(data: dict) -> dict:
     }
     
     try:
-        from datetime import timedelta
+        from datetime import timezone, timedelta
         buy_target = "buy.browse"
         sell_target = "sell.inventory"
         sell_fallback = "AddFixedPriceItem"
@@ -126,14 +126,15 @@ def parse_rate_limit_response(data: dict) -> dict:
         used_buy = max(0, api_buy["limit"] - api_buy["remaining"]) if api_buy["limit"] > 0 else 0
         used_sell = max(0, api_sell["limit"] - api_sell["remaining"]) if api_sell["limit"] > 0 else 0
         
-        # Nächsten Reset-Zeitpunkt berechnen (täglich um 02:00 Uhr Berlin Ortszeit / 00:00 Uhr UTC)
-        now_local = datetime.now()
-        reset_today = now_local.replace(hour=2, minute=0, second=0, microsecond=0)
-        if now_local >= reset_today:
-            reset_dt = reset_today + timedelta(days=1)
-        else:
-            reset_dt = reset_today
-        reset_str = reset_dt.strftime("%d.%m.%Y, %H:%M Uhr")
+        # Nächsten Reset-Zeitpunkt berechnen (täglich um 00:00 Uhr MST / 07:00 Uhr UTC)
+        now_utc = datetime.now(timezone.utc)
+        reset_utc = now_utc.replace(hour=7, minute=0, second=0, microsecond=0)
+        if now_utc >= reset_utc:
+            reset_utc += timedelta(days=1)
+        
+        # Konvertieren in die lokale Zeitzone des Systems (CEST/CET)
+        reset_local = reset_utc.astimezone()
+        reset_str = reset_local.strftime("%d.%m.%Y, %H:%M Uhr")
         
         result["buy"] = {
             "limit": 5000,
