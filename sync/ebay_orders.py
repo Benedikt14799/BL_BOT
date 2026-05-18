@@ -174,6 +174,8 @@ async def process_orders():
             item = line_items[0]
             sku = item.get("sku")
             title = item.get("title", "Unbekannt")
+            legacy_item_id = item.get("legacyItemId", "")
+            legacy_transaction_id = item.get("lineItemId", "")
             
             # Preis-Info
             pricing = order.get("pricingSummary", {})
@@ -287,8 +289,25 @@ async def process_orders():
             new_orders_count += 1
             total_profit_new += net_profit
             
+            # Links generieren
+            ebay_ship_url = ""
+            if legacy_item_id and legacy_transaction_id:
+                ebay_ship_url = f"https://www.ebay.de/ship/single/{legacy_item_id}-{legacy_transaction_id}"
+            
+            ebay_details_url = f"https://www.ebay.de/sh/ord/details?orderid={order_id}"
+            
             # Notification bauen (Emoji durch Text ersetzen für Windows Console logs, Telegram kann Emojis)
-            notifications.append(f"NEUER VERKAUF!\nLine: {title}\nProfit: {net_profit} Euro ({margin_percent}% Marge)\nLink: {linktobl}")
+            msg = (
+                f"🎉 *NEUER VERKAUF!*\n"
+                f"📖 *Line:* {title}\n"
+                f"💰 *Profit:* {net_profit} Euro ({margin_percent}% Marge)\n"
+                f"🔗 *Link:* [Booklooker-Link]({linktobl})\n"
+            )
+            if ebay_ship_url:
+                msg += f"📦 *eBay-Versand:* [Versandlabel erstellen]({ebay_ship_url})\n"
+            msg += f"📋 *eBay-Details:* [Bestell-Details]({ebay_details_url})"
+            
+            notifications.append(msg)
             
     await pool.close()
     return notifications
