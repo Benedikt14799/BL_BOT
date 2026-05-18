@@ -14,3 +14,5 @@ pydantic-settings
 python-telegram-bot
 # ebaysdk # Removed as it might be problematic or misnamed, using ebay-api if needed
 # ebay-ota # Removed as it's not on PyPI
+gspread
+oauth2client
