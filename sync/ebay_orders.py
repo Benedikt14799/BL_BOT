@@ -224,10 +224,20 @@ async def process_orders():
                     purchase_shipping = Decimal(str(lib_row.get("purchase_shipping") or 0))
                     linktobl = lib_row.get("linktobl", "")
             
-            # 4. Rentabilität / Marge berechnen
-            ebay_fee = estimate_ebay_fee(gross_revenue, cost_params)
+            # 4. Rentabilität / Marge berechnen (Präzise mit echten API-Gebühren)
+            fee_obj = order.get("totalMarketplaceFee", {})
+            actual_marketplace_fee = Decimal(str(fee_obj.get("value", "0.00")))
             
-            # Netto-Erlös (nach Gebühren)
+            is_ad_sale = any(it.get("properties", {}).get("soldViaAdCampaign") for it in line_items)
+            ad_fee = Decimal("0.00")
+            if is_ad_sale:
+                ad_rate = Decimal(os.getenv("EBAY_AD_RATE", "2.0")) / 100
+                ad_fee = gross_revenue * ad_rate * Decimal("1.19")
+                ad_fee = round(ad_fee, 2)
+                
+            ebay_fee = actual_marketplace_fee + ad_fee
+            
+            # Netto-Erlös (nach echten Gebühren)
             net_revenue = gross_revenue - ebay_fee
             
             # Reingewinn
@@ -290,10 +300,6 @@ async def process_orders():
             total_profit_new += net_profit
             
             # Links generieren
-            ebay_ship_url = ""
-            if legacy_item_id and legacy_transaction_id:
-                ebay_ship_url = f"https://www.ebay.de/ship/single/{legacy_item_id}-{legacy_transaction_id}"
-            
             ebay_details_url = f"https://www.ebay.de/sh/ord/details?orderid={order_id}"
             
             # Notification bauen (Emoji durch Text ersetzen für Windows Console logs, Telegram kann Emojis)
@@ -302,10 +308,8 @@ async def process_orders():
                 f"📖 *Line:* {title}\n"
                 f"💰 *Profit:* {net_profit} Euro ({margin_percent}% Marge)\n"
                 f"🔗 *Link:* [Booklooker-Link]({linktobl})\n"
+                f"📋 *eBay-Details:* [Bestell-Details]({ebay_details_url})"
             )
-            if ebay_ship_url:
-                msg += f"📦 *eBay-Versand:* [Versandlabel erstellen]({ebay_ship_url})\n"
-            msg += f"📋 *eBay-Details:* [Bestell-Details]({ebay_details_url})"
             
             notifications.append(msg)
             
