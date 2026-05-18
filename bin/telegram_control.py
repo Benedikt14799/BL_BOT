@@ -311,6 +311,24 @@ async def run_send_offers(profit_share):
     finally:
         if 'pool' in locals() and pool: await pool.close()
 
+async def run_sync_backlog():
+    await send_message_async("🚀 *Backlog-Sync wird gestartet...*")
+    try:
+        from sync.booklooker.ready_sync import run_ready_sync, ready_sync_lock
+        pool = await DatabaseManager.create_pool(DB_URL)
+        try:
+            with ready_sync_lock():
+                async def progress_callback(msg):
+                    await send_message_async(msg)
+                
+                await run_ready_sync(pool, progress_callback=progress_callback)
+        except RuntimeError as e:
+            await send_message_async(f"⚠️ {e}")
+        finally:
+            await pool.close()
+    except Exception as e:
+        await send_message_async(f"❌ Fehler beim Backlog-Sync: {e}")
+
 async def handle_update(update):
     if "message" not in update: return
     msg = update["message"]
@@ -329,6 +347,7 @@ async def handle_update(update):
                f"📦 *Bestand & Sync:*\n"
                f"• /status - Aktueller Datenbank-Stand\n"
                f"• /blsync - Abgleich Booklooker ↔️ eBay\n"
+               f"• /sync_backlog - Backlog-Abgleich vor Upload\n"
                f"• /ebaysync - eBay-Listen bereinigen\n"
                f"• /urlaub - Urlaubs-Reaktivierung\n"
                f"• /upload - Manueller eBay-Upload\n\n"
@@ -383,6 +402,8 @@ async def handle_update(update):
         asyncio.create_task(run_ebaysync())
     elif text == "/blsync":
         asyncio.create_task(run_blsync())
+    elif text in ["/sync_backlog", "/syncbacklog"]:
+        asyncio.create_task(run_sync_backlog())
     elif text == "/sales":
         asyncio.create_task(run_sales())
     elif text == "/report":
