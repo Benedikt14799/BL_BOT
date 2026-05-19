@@ -855,9 +855,9 @@ async def process_library_links_async(db_pool):
             return
 
         if skipped > 0:
-            logger.info(f"💾 Starte Detailverarbeitung für {total_to_process} Einträge (überspringe {skipped} bereits verarbeitete Bücher)…")
+            logger.info(f"💾 Starte Detailverarbeitung für {total_to_process} Einträge mit {MAX_SCRAPE_WORKERS} parallelen Workern (überspringe {skipped} bereits verarbeitete Bücher)…")
         else:
-            logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge…")
+            logger.info(f"Starte Detailverarbeitung für {total_to_process} Einträge mit {MAX_SCRAPE_WORKERS} parallelen Workern…")
 
         total_ok = 0
         total_filtered = 0
