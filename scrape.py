@@ -800,6 +800,15 @@ async def process_library_links_async(db_pool):
     import os
     from decimal import Decimal
 
+    # Altes Stopp-Signal löschen, damit ein neuer Lauf nicht sofort abbricht
+    flag_path = os.path.join(os.path.dirname(__file__), "stop_service.flag")
+    if os.path.exists(flag_path):
+        try:
+            os.remove(flag_path)
+            logger.info("Altes Stop-Flag (stop_service.flag) gelöscht.")
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen des Stop-Flags: {e}")
+
     from ebay_token_manager import get_token
     env_str = os.getenv("EBAY_ENV", "PRODUCTION")
     base_url = "https://api.ebay.com" if env_str == "PRODUCTION" else "https://api.sandbox.ebay.com"
