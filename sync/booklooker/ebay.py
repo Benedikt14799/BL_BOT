@@ -844,12 +844,29 @@ async def run_sync(pool):
                     except Exception as e_db:
                         db_stats_msg = f"⚠️ DB-Stats Fehler: {e_db}"
                         
+                    # Proxy Daten holen
+                    proxy_stats = ""
+                    try:
+                        from proxy_manager import ProxyManager
+                        pm_report = ProxyManager(pool)
+                        proxy = await pm_report.get_current_usage()
+                        mb = proxy["bytes"] / (1024*1024)
+                        cost = float(proxy["cost"])
+                        proxy_stats = (
+                            f"🌐 *Proxy-Verbrauch heute:*\n"
+                            f"📦 {mb:.1f} MB | 💸 {cost:.2f} €\n"
+                            f"🔢 {proxy['requests']} Requests"
+                        ).replace(",", ".")
+                    except Exception as e_proxy:
+                        proxy_stats = f"⚠️ Proxy-Verbrauch-Fehler: {e_proxy}"
+                        
                     msg = (
                         f"⏰ *Stündlicher BL-Sync Report* (Laufzeit: {int(hours)}h {int((elapsed.total_seconds() % 3600) / 60)}m)\n\n"
                         f"📈 *Fortschritt:* {processed} / {total} ({percent:.1f}%)\n"
                         f"⚡ *Geschwindigkeit:* {speed:.1f} Artikel/h\n\n"
                         f"📚 *In dieser Stunde:* ok={h_ok}, filtered={h_filtered}, errors={h_errors}\n"
                         f"🏆 *Gesamt (Session):* ok={session_ok}, filtered={session_filtered}, errors={session_errors}\n\n"
+                        f"{proxy_stats}\n\n"
                         f"{db_stats_msg}"
                     ).replace(",", ".")
                     await send_telegram_progress(msg)
