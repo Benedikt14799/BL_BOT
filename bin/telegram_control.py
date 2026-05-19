@@ -196,6 +196,9 @@ async def run_scrape():
     try:
         pool = await DatabaseManager.create_pool(DB_URL)
         try:
+            # Stats vor dem Scraping holen
+            stats_before = await DatabaseManager.get_library_stats(pool)
+            
             with scrape.scraping_lock():
                 links_to_scrape = []
                 links_file_path = os.path.join(os.path.dirname(__file__), '..', 'links.txt')
@@ -214,7 +217,21 @@ async def run_scrape():
                     await scrape.scrape_and_save_pages(pool)
                     
                 await scrape.perform_webscrape_async(pool)
-                await send_message_async("✅ *Scraping erfolgreich abgeschlossen!*")
+                
+                # Stats nach dem Scraping holen
+                stats_after = await DatabaseManager.get_library_stats(pool)
+                new_ready = stats_after['ready'] - stats_before['ready']
+                
+                msg = (
+                    f"✅ *BookLooker-Scraping erfolgreich abgeschlossen!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📥 *Status nach Scraping:*\n"
+                    f"• Pipeline (Wartend): {stats_after['pipeline']:,}\n"
+                    f"• Bereit für eBay: {stats_after['ready']:,} (*+{new_ready}* neu)\n"
+                    f"• Auf eBay gelistet: {stats_after['listed']:,}\n"
+                    f"• Gefiltert/Aussortiert: {stats_after['filtered']:,}"
+                ).replace(",", ".")
+                await send_message_async(msg)
         except RuntimeError as e:
             await send_message_async(f"⚠️ {e}")
         finally:

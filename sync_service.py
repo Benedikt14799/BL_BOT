@@ -139,26 +139,14 @@ async def run_scraping(pool):
 # Haupt-Schleife (Schedule)
 # ==========================================
 async def service_loop(pool):
-    logger.info("✅ Sync-Service (Scheduled) gestartet.")
+    logger.info("✅ Sync-Service (Lightweight Scheduler) gestartet.")
     
     now = datetime.now()
     today = now.date()
     last_tracked_day = today
 
-    # Initialize daily task states based on scheduled times
+    # Initialize report state based on current time
     config = load_bot_config()
-
-    # Sync state initialization
-    sync_parts = [int(x) for x in config.get("sync_time", "03:00").split(":")]
-    sync_time_today = datetime.combine(today, dt_time(sync_parts[0], sync_parts[1]))
-    last_sync_day = today if now >= sync_time_today else None
-
-    # Scrape state initialization
-    scrape_parts = [int(x) for x in config.get("scrape_time", "10:00").split(":")]
-    scrape_time_today = datetime.combine(today, dt_time(scrape_parts[0], scrape_parts[1]))
-    last_scrape_day = today if now >= scrape_time_today else None
-
-    # Report state initialization
     sent_reports_today = set()
     for r_time in config.get("report_times", ["09:00", "12:00", "18:00", "19:00"]):
         r_parts = [int(x) for x in r_time.split(":")]
@@ -168,10 +156,6 @@ async def service_loop(pool):
 
     last_order_interval = None
     proxy_alert_sent = False
-
-    # Background task handles
-    sync_task = None
-    scrape_task = None
     order_task = None
 
     while True:
@@ -191,29 +175,7 @@ async def service_loop(pool):
                 sent_reports_today.clear()
                 last_tracked_day = today
 
-            # 1. Check Daily Sync (03:00)
-            sync_time_parts = [int(x) for x in config.get("sync_time", "03:00").split(":")]
-            sync_time_today = datetime.combine(today, dt_time(sync_time_parts[0], sync_time_parts[1]))
-            if config.get("auto_sync") and last_sync_day != today and now >= sync_time_today:
-                if sync_task is None or sync_task.done():
-                    logger.info("⏳ Starte nächtlichen Full Sync im Hintergrund...")
-                    sync_task = asyncio.create_task(run_full_sync(pool))
-                    last_sync_day = today
-                else:
-                    logger.warning("⚠️ Sync sollte starten, aber eine vorherige Sync-Aufgabe läuft noch!")
-
-            # 2. Check Daily Scrape (10:00)
-            scrape_time_parts = [int(x) for x in config.get("scrape_time", "10:00").split(":")]
-            scrape_time_today = datetime.combine(today, dt_time(scrape_time_parts[0], scrape_time_parts[1]))
-            if config.get("auto_scrape") and last_scrape_day != today and now >= scrape_time_today:
-                if scrape_task is None or scrape_task.done():
-                    logger.info("⏳ Starte tägliches Scraping im Hintergrund...")
-                    scrape_task = asyncio.create_task(run_scraping(pool))
-                    last_scrape_day = today
-                else:
-                    logger.warning("⚠️ Scraping sollte starten, aber eine vorherige Scraping-Aufgabe läuft noch!")
-
-            # 3. Check Scheduled Reports
+            # 1. Check Scheduled Reports (09:00, 12:00, 18:00, 19:00)
             report_times = config.get("report_times", ["09:00", "12:00", "18:00", "19:00"])
             for r_time in report_times:
                 r_parts = [int(x) for x in r_time.split(":")]
@@ -232,7 +194,7 @@ async def service_loop(pool):
                     
                     sent_reports_today.add(r_time)
 
-            # 4. Periodischer eBay Order Check (alle 30 Minuten, z.B. um :00 und :30)
+            # 2. Periodischer eBay Order Check (alle 30 Minuten, z.B. um :00 und :30)
             current_order_interval = now.replace(minute=now.minute - now.minute % 30, second=0, microsecond=0)
             if last_order_interval is None or last_order_interval != current_order_interval:
                 if order_task is None or order_task.done():
@@ -251,7 +213,7 @@ async def service_loop(pool):
                 else:
                     logger.warning("⚠️ Order-Check sollte starten, aber ein vorheriger Order-Check läuft noch!")
             
-            # 5. Check Proxy Budget Alert
+            # 3. Check Proxy Budget Alert
             pm = ProxyManager(pool)
             if not pm.is_budget_ok() and not proxy_alert_sent:
                 await send_telegram_report("🛑 *BUDGET-ALARM*\nDas tägliche Proxy-Budget wurde erreicht. Der Bot hat den Scraper pausiert!")
