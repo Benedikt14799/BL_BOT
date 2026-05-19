@@ -1022,8 +1022,6 @@ async def process_library_links_async(db_pool):
                     # Proxy Daten holen
                     proxy_stats = ""
                     try:
-                        from proxy_manager import ProxyManager
-                        pm = ProxyManager(db_pool)
                         proxy = await pm.get_current_usage()
                         mb = proxy["bytes"] / (1024*1024)
                         cost = float(proxy["cost"])
