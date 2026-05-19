@@ -133,21 +133,21 @@ async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: Pr
     if GLOBAL_STOP_SCRAPE:
         raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
 
-    # Proxy-Logik abfragen
-    proxy_args = {}
-    if proxy_manager:
-        try:
-            proxy_args = await proxy_manager.get_proxy_args(url)
-        except Exception as e:
-            logger.error(f"Proxy-Konfigurationsfehler: {e}")
-            if getattr(proxy_manager, 'kill_switch', True):
-                GLOBAL_STOP_SCRAPE = True
-                raise e
-
     async with semaphore:
         for attempt in range(max_retries + 1):
             if GLOBAL_STOP_SCRAPE:
                 raise Exception("SCRAPE_STOPPED_DUE_TO_BLOCK")
+
+            # Proxy-Logik bei jedem Versuch frisch abfragen (erzwingt IP-Rotation bei Retries)
+            proxy_args = {}
+            if proxy_manager:
+                try:
+                    proxy_args = await proxy_manager.get_proxy_args(url)
+                except Exception as e:
+                    logger.error(f"Proxy-Konfigurationsfehler: {e}")
+                    if getattr(proxy_manager, 'kill_switch', True):
+                        GLOBAL_STOP_SCRAPE = True
+                        raise e
 
             try:
                 # Grundschutz gegen "Bursting" (auch mit Proxy)
