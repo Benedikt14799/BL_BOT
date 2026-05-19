@@ -17,6 +17,7 @@ import logging
 import random
 from decimal import Decimal
 from datetime import datetime
+from contextlib import contextmanager
 
 import aiohttp
 import re
@@ -32,6 +33,81 @@ from database import DatabaseManager
 from price_processing import PriceProcessing
 from ebay_token_manager import get_token
 import ebay_upload
+
+SYNC_LOCK_FILE = os.path.join(PROJECT_ROOT, "sync.lock")
+
+def is_pid_running(pid: int) -> bool:
+    if os.name == 'nt':
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        PROCESS_QUERY_INFORMATION = 0x0400
+        handle = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, pid)
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+@contextmanager
+def sync_lock():
+    if os.path.exists(SYNC_LOCK_FILE):
+        try:
+            with open(SYNC_LOCK_FILE, "r") as f:
+                content = f.read().strip()
+            if content:
+                pid = int(content)
+                if is_pid_running(pid):
+                    logger.warning(f"⚠️ Bestandsabgleich läuft bereits mit PID {pid}. Breche ab.")
+                    raise RuntimeError(f"Bestandsabgleich läuft bereits (PID {pid})")
+                else:
+                    logger.info(f"Veraltete Sperrdatei gefunden (PID {pid} läuft nicht mehr). Lösche sie.")
+                    os.remove(SYNC_LOCK_FILE)
+        except (ValueError, OSError) as e:
+            logger.warning(f"Fehler beim Lesen der Sperrdatei: {e}. Lösche sie.")
+            try:
+                os.remove(SYNC_LOCK_FILE)
+            except OSError:
+                pass
+
+    my_pid = os.getpid()
+    try:
+        with open(SYNC_LOCK_FILE, "w") as f:
+            f.write(str(my_pid))
+        logger.info(f"Sperrdatei erstellt für PID {my_pid}.")
+        yield
+    finally:
+        try:
+            if os.path.exists(SYNC_LOCK_FILE):
+                with open(SYNC_LOCK_FILE, "r") as f:
+                    content = f.read().strip()
+                if content == str(my_pid):
+                    os.remove(SYNC_LOCK_FILE)
+                    logger.info(f"Sperrdatei für PID {my_pid} gelöscht.")
+        except Exception as e:
+            logger.error(f"Fehler beim Löschen der Sperrdatei: {e}")
+
+async def send_telegram_progress(text: str):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id: return
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={
+                "chat_id": chat_id,
+                "text": text,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
+            }, timeout=10) as resp:
+                if resp.status != 200:
+                    logger.error(f"Telegram Progress Send Fehler: {resp.status}")
+    except Exception as e:
+        logger.error(f"Telegram Progress Send Exception: {e}")
 
 # ─── Konfiguration ────────────────────────────────────────────────
 load_dotenv(os.path.join(PROJECT_ROOT, ".env"), override=True)
@@ -613,9 +689,14 @@ async def worker(
     stats: dict,
     total_count: int,
     processed_count: list,
-    worker_id: str
+    worker_id: str,
+    startup_delay: float = 0.0
 ):
     """Holt Items aus der Queue und verarbeitet sie."""
+    if startup_delay > 0:
+        logger.info(f"{worker_id} Staggered Startup: Verzögere Start um {startup_delay:.1f}s...")
+        await asyncio.sleep(startup_delay)
+
     while True:
         if os.path.exists(STOP_FLAG):
             logger.warning(f"{worker_id} Stopp-Signal erkannt. Beende Worker...")
@@ -652,67 +733,104 @@ async def worker(
 
 async def run_sync(pool):
     """Gleicht alle eBay-gelisteten Artikel gegen BookLooker ab."""
-    logger.info("=" * 60)
-    logger.info("BookLooker ↔ eBay Bestandsabgleich gestartet (PARALLEL)")
-    logger.info("=" * 60)
+    with sync_lock():
+        logger.info("=" * 60)
+        logger.info("BookLooker ↔ eBay Bestandsabgleich gestartet (PARALLEL)")
+        logger.info("=" * 60)
 
-    # Stopp-Flag löschen, falls vorhanden
-    if os.path.exists(STOP_FLAG):
-        os.remove(STOP_FLAG)
+        # Stopp-Flag löschen, falls vorhanden
+        if os.path.exists(STOP_FLAG):
+            os.remove(STOP_FLAG)
 
-    # Kostenparameter laden
-    cost_params = _get_cost_params()
-    EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
-    MAX_WORKERS = int(os.getenv("MAX_SYNC_WORKERS", "5"))
+        # Kostenparameter laden
+        cost_params = _get_cost_params()
+        EBAY_BASE_URL = os.getenv("EBAY_BASE_URL", "https://api.ebay.com")
+        MAX_WORKERS = int(os.getenv("MAX_SYNC_WORKERS", "1")) # Standardmäßig 1 Worker für maximale Schonung
 
-    # ProxyManager initialisieren
-    pm = ProxyManager(pool)
-    cost_params["proxy_manager"] = pm
+        # ProxyManager initialisieren
+        pm = ProxyManager(pool)
+        cost_params["proxy_manager"] = pm
 
-    async with aiohttp.ClientSession() as session:
-        # Alle gelisteten Artikel laden
-        async with pool.acquire() as conn:
-            query = """
-                SELECT id, isbn, sku, title, start_price, linktobl, ebay_listing_id,
-                       purchase_price, purchase_shipping, is_private,
-                       backup1_url, backup1_price, backup1_shipping, backup1_is_private,
-                       backup2_url, backup2_price, backup2_shipping, backup2_is_private
-                FROM library
-                WHERE ebay_listed = TRUE
-                ORDER BY last_checked ASC NULLS FIRST
-            """
-            items = await conn.fetch(query)
+        async with aiohttp.ClientSession() as session:
+            # Alle gelisteten Artikel laden
+            async with pool.acquire() as conn:
+                query = """
+                    SELECT id, isbn, sku, title, start_price, linktobl, ebay_listing_id,
+                           purchase_price, purchase_shipping, is_private,
+                           backup1_url, backup1_price, backup1_shipping, backup1_is_private,
+                           backup2_url, backup2_price, backup2_shipping, backup2_is_private
+                    FROM library
+                    WHERE ebay_listed = TRUE
+                    ORDER BY last_checked ASC NULLS FIRST
+                """
+                items = await conn.fetch(query)
 
-        total = len(items)
-        if total == 0:
-            return {"total": 0, "stats": {}}
+            total = len(items)
+            if total == 0:
+                return {"total": 0, "stats": {}}
 
-        # Statistiken
-        stats = {
-            "unchanged": 0, "price_updated": 0, "sold": 0, "unprofitable": 0,
-            "skipped": 0, "network_error": 0, "calc_error": 0, "ebay_error": 0,
-            "vacation_paused": 0, "db_initialized": 0, "fallback_rotated": 0, "no_backup_ended": 0
-        }
-        processed_count = [0] 
+            # Statistiken
+            stats = {
+                "unchanged": 0, "price_updated": 0, "sold": 0, "unprofitable": 0,
+                "skipped": 0, "network_error": 0, "calc_error": 0, "ebay_error": 0,
+                "vacation_paused": 0, "db_initialized": 0, "fallback_rotated": 0, "no_backup_ended": 0
+            }
+            processed_count = [0] 
 
-        queue = asyncio.Queue()
-        for record in items:
-            await queue.put(record)
+            queue = asyncio.Queue()
+            for record in items:
+                await queue.put(record)
 
-        tasks = []
-        for i in range(MAX_WORKERS):
-            worker_id = f"[W-{i+1}]"
-            task = asyncio.create_task(
-                worker(queue, pool, session, EBAY_BASE_URL, cost_params, stats, total, processed_count, worker_id)
-            )
-            tasks.append(task)
+            # Stündlicher Fortschrittsbericht im Telegram Channel
+            async def hourly_reporter():
+                start_time = datetime.now()
+                while True:
+                    await asyncio.sleep(3600) # Exakt 1 Stunde schlafen
+                    elapsed = datetime.now() - start_time
+                    hours = elapsed.total_seconds() / 3600.0
+                    processed = processed_count[0]
+                    
+                    if processed == 0:
+                        continue
+                        
+                    speed = processed / hours if hours > 0 else 0
+                    percent = (processed / total) * 100
+                    
+                    msg = (
+                        f"🔄 *eBay ↔ BookLooker Sync-Fortschritt*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"⏱️ Gelaufen: {int(hours)}h {int((elapsed.total_seconds() % 3600) / 60)}m\n"
+                        f"📦 Fortschritt: *{processed}/{total}* ({percent:.1f}%)\n"
+                        f"⚡ Geschwindigkeit: *{speed:.1f} Artikel/h*\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"✅ Unverändert: {stats.get('unchanged', 0)}\n"
+                        f"✍️ Preis-Updates: {stats.get('price_updated', 0)}\n"
+                        f"🗑️ Verkauft (BL): {stats.get('sold', 0)}\n"
+                        f"⚠️ Fehler/Pausiert: {stats.get('skipped', 0) + stats.get('network_error', 0) + stats.get('ebay_error', 0) + stats.get('vacation_paused', 0)}"
+                    )
+                    await send_telegram_progress(msg)
 
-        await queue.join()
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+            reporter_task = asyncio.create_task(hourly_reporter())
 
-    return {"total": total, "stats": stats}
+            tasks = []
+            for i in range(MAX_WORKERS):
+                worker_id = f"[W-{i+1}]"
+                # Gestaffelter Start (z. B. alle 4 Sekunden ein neuer Worker)
+                startup_delay = i * 4.0
+                task = asyncio.create_task(
+                    worker(queue, pool, session, EBAY_BASE_URL, cost_params, stats, total, processed_count, worker_id, startup_delay)
+                )
+                tasks.append(task)
+
+            try:
+                await queue.join()
+            finally:
+                reporter_task.cancel()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+        return {"total": total, "stats": stats}
 
 async def main():
     """Einmal-Durchlauf für CLI-Start."""

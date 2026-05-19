@@ -20,6 +20,8 @@ from sync.ebay_orders import process_orders, generate_daily_report
 from sync.ebay_negotiation import eBayNegotiation
 from database import DatabaseManager
 import ebay_upload
+import scrape
+from proxy_manager import ProxyManager
 
 # Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -179,12 +181,46 @@ async def run_blsync():
     await send_message_async("🔄 *Bestands- & Preis-Sync gestartet...*")
     try:
         pool = await DatabaseManager.create_pool(DB_URL)
-        await sync_ebay.run_sync(pool)
-        await send_message_async("✅ *Bestands- & Preis-Sync fertig!*")
+        try:
+            await sync_ebay.run_sync(pool)
+            await send_message_async("✅ *Bestands- & Preis-Sync fertig!*")
+        except RuntimeError as e:
+            await send_message_async(f"⚠️ {e}")
+        finally:
+            await pool.close()
     except Exception as e:
         await send_message_async(f"❌ Fehler: {e}")
-    finally:
-        if 'pool' in locals() and pool: await pool.close()
+
+async def run_scrape():
+    await send_message_async("🕷️ *Manueller BookLooker-Scraper gestartet...*")
+    try:
+        pool = await DatabaseManager.create_pool(DB_URL)
+        try:
+            with scrape.scraping_lock():
+                links_to_scrape = []
+                links_file_path = os.path.join(os.path.dirname(__file__), '..', 'links.txt')
+                if os.path.exists(links_file_path):
+                    with open(links_file_path, "r", encoding="utf-8") as file:
+                        for line in file:
+                            line = line.strip()
+                            if line and not line.startswith("#"):
+                                links_to_scrape.append(line)
+                
+                skip_categories = os.getenv("SKIP_CATEGORY_SEARCH", "False").lower() == "true"
+                if not skip_categories:
+                    pm = ProxyManager(pool)
+                    if links_to_scrape:
+                        await scrape.insert_links_into_sitetoscrape(links_to_scrape, pool, pm)
+                    await scrape.scrape_and_save_pages(pool)
+                    
+                await scrape.perform_webscrape_async(pool)
+                await send_message_async("✅ *Scraping erfolgreich abgeschlossen!*")
+        except RuntimeError as e:
+            await send_message_async(f"⚠️ {e}")
+        finally:
+            await pool.close()
+    except Exception as e:
+        await send_message_async(f"❌ Fehler beim Scraping: {e}")
 
 async def run_sales():
     await send_message_async("💰 *Suche nach neuen eBay Verkäufen...*")
@@ -351,6 +387,8 @@ async def handle_update(update):
                f"• /ebaysync - eBay-Listen bereinigen\n"
                f"• /urlaub - Urlaubs-Reaktivierung\n"
                f"• /upload - Manueller eBay-Upload\n\n"
+               f"🕷️ *Scraper:*\n"
+               f"• /scrape - Manueller BookLooker-Scraper\n\n"
                f"💰 *Sales & Controlling:*\n"
                f"• /sales - Suche nach neuen Verkäufen\n"
                f"• /report - Monatsbericht & Break-Even\n"
@@ -402,6 +440,8 @@ async def handle_update(update):
         asyncio.create_task(run_ebaysync())
     elif text == "/blsync":
         asyncio.create_task(run_blsync())
+    elif text == "/scrape":
+        asyncio.create_task(run_scrape())
     elif text in ["/sync_backlog", "/syncbacklog"]:
         asyncio.create_task(run_sync_backlog())
     elif text == "/sales":
