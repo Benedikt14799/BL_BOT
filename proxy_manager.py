@@ -76,12 +76,36 @@ class ProxyManager:
         return False
 
     async def get_proxy_args(self, url: str) -> dict:
-        """Gibt die Proxy-Argumente für aiohttp zurück."""
+        """Gibt die Proxy-Argumente für aiohttp zurück (mit automatischer IP-Rotation)."""
         if self.should_use_proxy(url):
             if not self.proxy_url:
                 if self.kill_switch:
                     raise Exception("PROXY_REQUIRED_BUT_NOT_CONFIGURED")
                 return {}
+            
+            # Automatische IP-Rotation für Data Impulse & gängige Anbieter via Session-ID
+            import random
+            proxy_str = self.proxy_url
+            if "@" in proxy_str:
+                try:
+                    parts = proxy_str.split("@")
+                    auth_part = parts[0] # z.B. "http://username:password"
+                    host_part = parts[1] # z.B. "gw.dataimpulse.com:823"
+                    
+                    auth_subparts = auth_part.split(":")
+                    schema = auth_subparts[0] # "http"
+                    username = auth_subparts[1].replace("//", "") # "b48f90a42fd8aa1c321b__cr.de"
+                    password = auth_subparts[2] # "05840031d7e8fcd2"
+                    
+                    # Generiere eine einzigartige Session-ID für diesen Request, um eine neue IP zu erzwingen
+                    rand_session = random.randint(1000000, 9999999)
+                    new_username = f"{username}__session-{rand_session}"
+                    
+                    rotated_proxy_url = f"{schema}://{new_username}:{password}@{host_part}"
+                    return {"proxy": rotated_proxy_url}
+                except Exception as e:
+                    logger.warning(f"Fehler bei dynamischer Proxy-Rotation: {e}")
+                    
             return {"proxy": self.proxy_url}
         return {}
 
