@@ -171,15 +171,24 @@ async def fetch_html(session: aiohttp.ClientSession, url: str, proxy_manager: Pr
                         return "SOLD_BY_STATUS"
 
                     if resp.status == 503 or resp.status == 429:
-                        wait = random.randint(300, 600) * (attempt + 1)
-                        logger.warning(f"Blockade ({resp.status}). Pause für {wait}s...")
-                        
-                        # Telegram Alert senden
-                        msg = f"⚠️ *Booklooker Blockade ({resp.status})*\nDer Scraper wurde ausgebremst bei:\n`{url}`\n\nPause für *{wait}s*..."
-                        await send_telegram_alert(msg)
-                        
-                        await asyncio.sleep(wait)
-                        continue
+                        # Wenn wir Proxies nutzen, ist das nur eine schmutzige IP aus dem Pool.
+                        # Wir rotieren sofort und versuchen es mit einer neuen IP (ohne den User zu stören!)
+                        if proxy_args.get("proxy") and attempt < max_retries:
+                            wait = random.uniform(2.0, 5.0)
+                            logger.warning(f"Proxy-IP besetzt ({resp.status}). Rotiere IP und versuche es erneut in {wait:.1f}s (Versuch {attempt+1}/{max_retries+1})...")
+                            await asyncio.sleep(wait)
+                            continue
+                        else:
+                            # Wenn alle Versuche fehlgeschlagen sind oder kein Proxy aktiv ist
+                            wait = random.randint(300, 600) * (attempt + 1)
+                            logger.critical(f"Kritische Blockade ({resp.status}). Pausiere für {wait}s...")
+                            
+                            # Telegram Alert senden
+                            msg = f"⚠️ *Booklooker Blockade ({resp.status})*\nDer Scraper wurde ausgebremst bei:\n`{url}`\n\nPause für *{wait}s*..."
+                            await send_telegram_alert(msg)
+                            
+                            await asyncio.sleep(wait)
+                            continue
                     
                     content = await resp.text()
                     
