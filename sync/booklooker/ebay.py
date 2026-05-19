@@ -97,7 +97,7 @@ async def send_telegram_progress(text: str):
     if not token or not chat_id: return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
             async with session.post(url, json={
                 "chat_id": chat_id,
                 "text": text,
@@ -751,7 +751,7 @@ async def run_sync(pool):
         pm = ProxyManager(pool)
         cost_params["proxy_manager"] = pm
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
             # Alle gelisteten Artikel laden
             async with pool.acquire() as conn:
                 query = """

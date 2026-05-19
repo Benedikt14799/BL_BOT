@@ -363,7 +363,7 @@ async def insert_links_into_sitetoscrape(links_to_scrape: list[str], db_pool, pr
 
     logger.info(f"Hole Metadaten (Seiten/Bücher) für {len(links_to_fetch)} Links (seriell)...")
     results = []
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
         for idx, l in enumerate(links_to_fetch):
             try:
                 res = await fetch_and_process(session, l, proxy_manager)
@@ -477,7 +477,7 @@ async def scrape_and_save_pages(db_pool):
     total_scraped = 0
 
     tasks = []
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
         pm = ProxyManager(db_pool)
         for r in rows:
             base = r["link"]
@@ -863,7 +863,7 @@ async def process_library_links_async(db_pool):
         hourly_errors = 0
         
         pm = ProxyManager(db_pool)
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
             from ebay_analytics import has_sufficient_quota, get_rate_limit_status
             
             # Initialen Token-Verbrauch für die stündliche Prognose (Scraping/Buy) holen
