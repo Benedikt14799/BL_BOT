@@ -182,8 +182,21 @@ async def run_blsync():
     try:
         pool = await DatabaseManager.create_pool(DB_URL)
         try:
-            await sync_ebay.run_sync(pool)
-            await send_message_async("✅ *Bestands- & Preis-Sync fertig!*")
+            res = await sync_ebay.run_sync(pool)
+            stats = res.get("stats", {})
+            total = res.get("total", 0)
+            
+            msg = (
+                f"✅ *Bestands- & Preis-Sync abgeschlossen!*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"📊 *Ergebnis von {total} geprüften Angeboten:*\n\n"
+                f"• Unverändert: `{stats.get('unchanged', 0)}`\n"
+                f"• Preis-Updates: *{stats.get('price_updated', 0)}*\n"
+                f"• Verkauft (BL): *{stats.get('sold', 0)}*\n"
+                f"• Urlaub (Pausiert): `{stats.get('vacation_paused', 0)}`\n"
+                f"• Fehler/Übersprungen: `{stats.get('skipped', 0) + stats.get('network_error', 0) + stats.get('ebay_error', 0)}`"
+            )
+            await send_message_async(msg)
         except RuntimeError as e:
             await send_message_async(f"⚠️ {e}")
         finally:
