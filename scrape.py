@@ -616,7 +616,7 @@ async def find_backups_for_isbn(session, isbn, original_link, original_condition
     return backups
 
 # Konfiguration für Detailphase
-DETAIL_SEMAPHORE = asyncio.Semaphore(1)  # Maximale Drosselung auf 1
+DETAIL_SEMAPHORE = asyncio.Semaphore(MAX_SCRAPE_WORKERS)  # Gesteuert über MAX_SCRAPE_WORKERS
 MAX_RETRIES = 2
 BATCH_SIZE = 10  # Kleine Batches für schnellere Reaktion auf Sperren
 
