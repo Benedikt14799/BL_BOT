@@ -85,9 +85,10 @@ def scraping_lock():
             logger.error(f"Fehler beim Löschen der Sperrdatei: {e}")
 number_pattern = re.compile(r"\d+")
 
-# Optimiert für maximale Stabilität (3 Worker, höhere Delays)
-semaphore = asyncio.Semaphore(3)
-DETAIL_SEMAPHORE = asyncio.Semaphore(3)
+# Optimiert für maximale Stabilität (standardmäßig 1 Worker wie der Bestands-Sync, konfigurierbar)
+MAX_SCRAPE_WORKERS = int(os.getenv("MAX_SCRAPE_WORKERS", "1"))
+semaphore = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
+DETAIL_SEMAPHORE = asyncio.Semaphore(MAX_SCRAPE_WORKERS)
 GLOBAL_STOP_SCRAPE = False  # Globales Flag für IP-Sperren
 
 USER_AGENTS = [
