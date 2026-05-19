@@ -781,9 +781,13 @@ async def run_sync(pool):
             for record in items:
                 await queue.put(record)
 
-            # Stündlicher Fortschrittsbericht im Telegram Channel
+            # Stündlicher Fortschrittsbericht im Telegram Channel (Premium Style)
             async def hourly_reporter():
                 start_time = datetime.now()
+                last_stats = {
+                    "unchanged": 0, "price_updated": 0, "sold": 0,
+                    "skipped": 0, "network_error": 0, "ebay_error": 0, "vacation_paused": 0
+                }
                 while True:
                     await asyncio.sleep(3600) # Exakt 1 Stunde schlafen
                     elapsed = datetime.now() - start_time
@@ -796,18 +800,57 @@ async def run_sync(pool):
                     speed = processed / hours if hours > 0 else 0
                     percent = (processed / total) * 100
                     
+                    # Stunden-Intervalldifferenz berechnen
+                    h_unchanged = stats.get('unchanged', 0) - last_stats.get('unchanged', 0)
+                    h_updated = stats.get('price_updated', 0) - last_stats.get('price_updated', 0)
+                    h_sold = stats.get('sold', 0) - last_stats.get('sold', 0)
+                    h_vacation = stats.get('vacation_paused', 0) - last_stats.get('vacation_paused', 0)
+                    h_errors = (stats.get('skipped', 0) + stats.get('network_error', 0) + stats.get('ebay_error', 0)) - \
+                               (last_stats.get('skipped', 0) + last_stats.get('network_error', 0) + last_stats.get('ebay_error', 0))
+                    
+                    # Interval-Summen für Anzeige
+                    h_ok = h_unchanged + h_updated
+                    h_filtered = h_sold + h_vacation
+                    
+                    # Letzte Stats für das nächste Intervall sichern
+                    last_stats['unchanged'] = stats.get('unchanged', 0)
+                    last_stats['price_updated'] = stats.get('price_updated', 0)
+                    last_stats['sold'] = stats.get('sold', 0)
+                    last_stats['skipped'] = stats.get('skipped', 0)
+                    last_stats['network_error'] = stats.get('network_error', 0)
+                    last_stats['ebay_error'] = stats.get('ebay_error', 0)
+                    last_stats['vacation_paused'] = stats.get('vacation_paused', 0)
+                    
+                    session_ok = stats.get('unchanged', 0) + stats.get('price_updated', 0)
+                    session_filtered = stats.get('sold', 0) + stats.get('vacation_paused', 0)
+                    session_errors = stats.get('skipped', 0) + stats.get('network_error', 0) + stats.get('ebay_error', 0)
+                    
+                    # Live DB-Verteilung holen
+                    db_stats_msg = ""
+                    try:
+                        async with pool.acquire() as conn:
+                            pending = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 7")
+                            active_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 1")
+                            filtered_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 2")
+                            unprofitable_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 3")
+                            db_stats_msg = (
+                                f"📊 *Live DB-Verteilung:*\n"
+                                f"⏳ Pending: `{pending}`\n"
+                                f"✅ Active: `{active_db}`\n"
+                                f"🛡️ Filtered: `{filtered_db}`\n"
+                                f"💸 Unprofitable: `{unprofitable_db}`"
+                            )
+                    except Exception as e_db:
+                        db_stats_msg = f"⚠️ DB-Stats Fehler: {e_db}"
+                        
                     msg = (
-                        f"🔄 *eBay ↔ BookLooker Sync-Fortschritt*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"⏱️ Gelaufen: {int(hours)}h {int((elapsed.total_seconds() % 3600) / 60)}m\n"
-                        f"📦 Fortschritt: *{processed}/{total}* ({percent:.1f}%)\n"
-                        f"⚡ Geschwindigkeit: *{speed:.1f} Artikel/h*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━\n"
-                        f"✅ Unverändert: {stats.get('unchanged', 0)}\n"
-                        f"✍️ Preis-Updates: {stats.get('price_updated', 0)}\n"
-                        f"🗑️ Verkauft (BL): {stats.get('sold', 0)}\n"
-                        f"⚠️ Fehler/Pausiert: {stats.get('skipped', 0) + stats.get('network_error', 0) + stats.get('ebay_error', 0) + stats.get('vacation_paused', 0)}"
-                    )
+                        f"⏰ *Stündlicher BL-Sync Report* (Laufzeit: {int(hours)}h {int((elapsed.total_seconds() % 3600) / 60)}m)\n\n"
+                        f"📈 *Fortschritt:* {processed} / {total} ({percent:.1f}%)\n"
+                        f"⚡ *Geschwindigkeit:* {speed:.1f} Artikel/h\n\n"
+                        f"📚 *In dieser Stunde:* ok={h_ok}, filtered={h_filtered}, errors={h_errors}\n"
+                        f"🏆 *Gesamt (Session):* ok={session_ok}, filtered={session_filtered}, errors={session_errors}\n\n"
+                        f"{db_stats_msg}"
+                    ).replace(",", ".")
                     await send_telegram_progress(msg)
 
             reporter_task = asyncio.create_task(hourly_reporter())

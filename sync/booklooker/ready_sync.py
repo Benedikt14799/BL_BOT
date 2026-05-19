@@ -160,89 +160,165 @@ async def run_ready_sync(db_pool, progress_callback=None):
     if progress_callback:
         await progress_callback(f"🚀 *Backlog-Sync gestartet:*\nAbgleich von `{total_backlog}` Angeboten im Backlog gestartet...")
 
-    # Zähler
-    active_count = 0
-    sold_count = 0
-    vacation_count = 0
-    unknown_count = 0
-    processed = 0
+    # Zähler in Dictionary auslagern für Background-Reporter
+    stats = {
+        "active": 0,
+        "sold": 0,
+        "vacation": 0,
+        "unknown": 0,
+        "processed": 0
+    }
 
+    # Stündlicher Fortschrittsbericht im Telegram Channel (Premium Style)
+    async def hourly_reporter():
+        start_time = datetime.now()
+        last_stats = {
+            "active": 0, "sold": 0, "vacation": 0, "unknown": 0
+        }
+        while True:
+            await asyncio.sleep(3600) # Exakt 1 Stunde schlafen
+            elapsed = datetime.now() - start_time
+            hours = elapsed.total_seconds() / 3600.0
+            processed = stats["processed"]
+            
+            if processed == 0:
+                continue
+                
+            speed = processed / hours if hours > 0 else 0
+            percent = (processed / total_backlog) * 100
+            
+            # Stunden-Intervalldifferenz berechnen
+            h_active = stats["active"] - last_stats["active"]
+            h_sold = stats["sold"] - last_stats["sold"]
+            h_vacation = stats["vacation"] - last_stats["vacation"]
+            h_unknown = stats["unknown"] - last_stats["unknown"]
+            
+            # Summen für das Intervall
+            h_ok = h_active
+            h_filtered = h_sold + h_vacation
+            
+            # Letzte Stats sichern
+            last_stats["active"] = stats["active"]
+            last_stats["sold"] = stats["sold"]
+            last_stats["vacation"] = stats["vacation"]
+            last_stats["unknown"] = stats["unknown"]
+            
+            session_ok = stats["active"]
+            session_filtered = stats["sold"] + stats["vacation"]
+            session_errors = stats["unknown"]
+            
+            # Live DB-Verteilung holen
+            db_stats_msg = ""
+            try:
+                async with db_pool.acquire() as conn:
+                    pending = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 7")
+                    active_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 1")
+                    filtered_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 2")
+                    unprofitable_db = await conn.fetchval("SELECT COUNT(*) FROM library WHERE status_id = 3")
+                    db_stats_msg = (
+                        f"📊 *Live DB-Verteilung:*\n"
+                        f"⏳ Pending: `{pending}`\n"
+                        f"✅ Active: `{active_db}`\n"
+                        f"🛡️ Filtered: `{filtered_db}`\n"
+                        f"💸 Unprofitable: `{unprofitable_db}`"
+                    )
+            except Exception as e_db:
+                db_stats_msg = f"⚠️ DB-Stats Fehler: {e_db}"
+                
+            msg = (
+                f"⏰ *Stündlicher Backlog-Sync Report* (Laufzeit: {int(hours)}h {int((elapsed.total_seconds() % 3600) / 60)}m)\n\n"
+                f"📈 *Fortschritt:* {processed} / {total_backlog} ({percent:.1f}%)\n"
+                f"⚡ *Geschwindigkeit:* {speed:.1f} Artikel/h\n\n"
+                f"📚 *In dieser Stunde:* ok={h_ok}, filtered={h_filtered}, errors={h_unknown}\n"
+                f"🏆 *Gesamt (Session):* ok={session_ok}, filtered={session_filtered}, errors={session_errors}\n\n"
+                f"{db_stats_msg}"
+            ).replace(",", ".")
+            
+            if progress_callback:
+                await progress_callback(msg)
+            else:
+                await send_telegram_alert(msg)
+
+    reporter_task = asyncio.create_task(hourly_reporter())
     proxy_manager = ProxyManager(db_pool)
     
-    async with aiohttp.ClientSession() as session:
-        for idx, row in enumerate(rows):
-            # Stopp-Flag prüfen
-            stop_flag_path = os.path.join(PROJECT_ROOT, "stop_sync.flag")
-            if os.path.exists(stop_flag_path):
-                logger.warning("Stop-Flag (stop_sync.flag) erkannt. Beende Backlog-Sync vorzeitig...")
-                os.remove(stop_flag_path)
-                break
+    try:
+        async with aiohttp.ClientSession() as session:
+            for idx, row in enumerate(rows):
+                # Stopp-Flag prüfen
+                stop_flag_path = os.path.join(PROJECT_ROOT, "stop_sync.flag")
+                if os.path.exists(stop_flag_path):
+                    logger.warning("Stop-Flag (stop_sync.flag) erkannt. Beende Backlog-Sync vorzeitig...")
+                    os.remove(stop_flag_path)
+                    break
 
-            library_id = row["id"]
-            url = row["linktobl"]
-            sku = row["sku"]
-            title = row["title"]
+                library_id = row["id"]
+                url = row["linktobl"]
+                sku = row["sku"]
+                title = row["title"]
 
-            if not url:
-                unknown_count += 1
-                processed += 1
-                continue
+                if not url:
+                    stats["unknown"] += 1
+                    stats["processed"] += 1
+                    continue
 
-            html = await fetch_bl_html(session, url, proxy_manager)
-            soup = None
-            if html and html not in ["404_NOT_FOUND", "410_GONE"]:
-                soup = BeautifulSoup(html, "html.parser")
-            
-            status = is_sold(html, soup)
-            
-            async with db_pool.acquire() as conn:
-                if status == "SOLD":
-                    sold_count += 1
-                    await conn.execute("""
-                        UPDATE library 
-                        SET status_id = 5, 
-                            ebay_listed = FALSE,
-                            ebay_delisted_reason = 'sold_on_bl_backlog',
-                            last_checked = NOW()
-                        WHERE id = $1;
-                    """, library_id)
-                    logger.info(f"🗑️ [{sku}] Aussortiert (verkauft auf BL): {title}")
-                elif status == "VACATION":
-                    vacation_count += 1
-                    await conn.execute("UPDATE library SET last_checked = NOW() WHERE id = $1;", library_id)
-                    logger.info(f"🏖️ [{sku}] Verkäufer im Urlaub (auf BL): {title}")
-                elif status == "OK":
-                    active_count += 1
-                    await conn.execute("UPDATE library SET last_checked = NOW() WHERE id = $1;", library_id)
-                    logger.info(f"✅ [{sku}] Bestätigt (noch da): {title}")
-                else:
-                    unknown_count += 1
-                    logger.warning(f"❓ [{sku}] Status unbekannt: {title}")
-
-            processed += 1
-            
-            # Alle 100 Bücher oder bei Fertigstellung Zwischenstand per Callback senden
-            if progress_callback and (processed % 100 == 0 or processed == total_backlog):
-                progress_msg = (
-                    f"🔄 *Backlog-Sync Fortschritt:* `{processed}/{total_backlog}` geprüft...\n\n"
-                    f"✅ Noch verfügbar: `{active_count}`\n"
-                    f"🗑️ Auf BL verkauft (aussortiert): `{sold_count}`\n"
-                    f"🏖️ Verkäufer im Urlaub: `{vacation_count}`\n"
-                    f"❓ Unbekannt/Übersprungen: `{unknown_count}`"
-                )
-                await progress_callback(progress_msg)
+                html = await fetch_bl_html(session, url, proxy_manager)
+                soup = None
+                if html and html not in ["404_NOT_FOUND", "410_GONE"]:
+                    soup = BeautifulSoup(html, "html.parser")
                 
-            # Kurzer Sleep zum Schutz vor Überlastung
-            await asyncio.sleep(0.5)
+                status = is_sold(html, soup)
+                
+                async with db_pool.acquire() as conn:
+                    if status == "SOLD":
+                        stats["sold"] += 1
+                        await conn.execute("""
+                            UPDATE library 
+                            SET status_id = 5, 
+                                ebay_listed = FALSE,
+                                ebay_delisted_reason = 'sold_on_bl_backlog',
+                                last_checked = NOW()
+                            WHERE id = $1;
+                        """, library_id)
+                        logger.info(f"🗑️ [{sku}] Aussortiert (verkauft auf BL): {title}")
+                    elif status == "VACATION":
+                        stats["vacation"] += 1
+                        await conn.execute("UPDATE library SET last_checked = NOW() WHERE id = $1;", library_id)
+                        logger.info(f"🏖️ [{sku}] Verkäufer im Urlaub (auf BL): {title}")
+                    elif status == "OK":
+                        stats["active"] += 1
+                        await conn.execute("UPDATE library SET last_checked = NOW() WHERE id = $1;", library_id)
+                        logger.info(f"✅ [{sku}] Bestätigt (noch da): {title}")
+                    else:
+                        stats["unknown"] += 1
+                        logger.warning(f"❓ [{sku}] Status unbekannt: {title}")
+
+                stats["processed"] += 1
+                
+                # Alle 100 Bücher Zwischenstand per Callback senden
+                if progress_callback and (stats["processed"] % 100 == 0 or stats["processed"] == total_backlog):
+                    progress_msg = (
+                        f"🔄 *Backlog-Sync Fortschritt:* `{stats['processed']}/{total_backlog}` geprüft...\n\n"
+                        f"✅ Noch verfügbar: `{stats['active']}`\n"
+                        f"🗑️ Auf BL verkauft (aussortiert): `{stats['sold']}`\n"
+                        f"🏖️ Verkäufer im Urlaub: `{stats['vacation']}`\n"
+                        f"❓ Unbekannt/Übersprungen: `{stats['unknown']}`"
+                    )
+                    await progress_callback(progress_msg)
+                    
+                # Kurzer Sleep zum Schutz vor Überlastung
+                await asyncio.sleep(0.5)
+    finally:
+        reporter_task.cancel()
 
     # Abschlussbericht senden
     final_msg = (
         f"🏁 *Backlog-Sync abgeschlossen!*\n\n"
-        f"📊 *Ergebnis von {processed} geprüften Angeboten:*\n"
-        f"✅ Bestätigt (bereit für Upload): `{active_count}`\n"
-        f"🗑️ Auf BL verkauft (aussortiert): `{sold_count}`\n"
-        f"🏖️ Verkäufer im Urlaub: `{vacation_count}`\n"
-        f"❓ Unbekannt/Fehlerhaft: `{unknown_count}`\n\n"
+        f"📊 *Ergebnis von {stats['processed']} geprüften Angeboten:*\n"
+        f"✅ Bestätigt (bereit für Upload): `{stats['active']}`\n"
+        f"🗑️ Auf BL verkauft (aussortiert): `{stats['sold']}`\n"
+        f"🏖️ Verkäufer im Urlaub: `{stats['vacation']}`\n"
+        f"❓ Unbekannt/Fehlerhaft: `{stats['unknown']}`\n\n"
         f"*Hinweis:* Alle auf BL verkauften Bücher wurden auf den Status `sold_on_bl` gesetzt und werden nicht hochgeladen."
     )
     logger.info(final_msg)
