@@ -752,7 +752,7 @@ async def run_sync(pool):
         cost_params["proxy_manager"] = pm
 
         async with aiohttp.ClientSession(cookie_jar=aiohttp.DummyCookieJar()) as session:
-            # Alle gelisteten Artikel laden
+            # Alle gelisteten Artikel laden, die länger als 24 Stunden nicht geprüft wurden (älteste zuerst)
             async with pool.acquire() as conn:
                 query = """
                     SELECT id, isbn, sku, title, start_price, linktobl, ebay_listing_id,
@@ -761,6 +761,7 @@ async def run_sync(pool):
                            backup2_url, backup2_price, backup2_shipping, backup2_is_private
                     FROM library
                     WHERE ebay_listed = TRUE
+                      AND (last_checked IS NULL OR last_checked < NOW() - INTERVAL '24 hours')
                     ORDER BY last_checked ASC NULLS FIRST
                 """
                 items = await conn.fetch(query)
